@@ -33,6 +33,15 @@
 #include <memory>
 #include <mutex>
 #include <queue>
+#include <fstream>
+#include <iomanip>
+#include <limits>
+#include <sstream>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <cerrno>
+#include <cmath>
+#include <Eigen/Eigenvalues>
 
 #include <cv_bridge/cv_bridge.h>
 #include <image_transport/image_transport.h>
@@ -141,6 +150,14 @@ public:
   sensor_msgs::PointCloud2 most_recent_radar_scan_;
   Eigen::Vector3d w_b_radar_trigger_;
   std::shared_ptr<reve::RadarBodyVelocityEstimator> radar_body_estimator_;
+  uint64_t radar_scan_callback_count_ = 0;
+
+  // DVC diagnostic logging (W3-W4 minimal closure)
+  bool dvc_diag_enabled_ = false;
+  std::string dvc_diag_output_dir_;
+  std::string dvc_run_id_;
+  std::ofstream dvc_diag_stream_;
+  uint64_t dvc_diag_rows_ = 0;
 
   // Nodes, Subscriber, Publishers
   ros::NodeHandle nh_;
@@ -250,6 +267,10 @@ public:
     nh_private.param("topic_radar_scan", topic_radar_scan, topic_radar_scan);
     double timeshift_cam_imu = 0.0;
     nh_private.param("timeshift_cam_imu", timeshift_cam_imu, timeshift_cam_imu);
+    nh_private_.param("dvc_diag_enabled", dvc_diag_enabled_, dvc_diag_enabled_);
+    nh_private_.param("dvc_diag_output_dir", dvc_diag_output_dir_, dvc_diag_output_dir_);
+    nh_private_.param("dvc_run_id", dvc_run_id_, dvc_run_id_);
+    initDvcDiagLogging();
 
     subImu_                 = nh_.subscribe(topic_imu, 2000, &RovioNode::imuCallback, this);
     subImg0_                = nh_.subscribe(topic_cam, 10, &RovioNode::imgCallback0, this);
@@ -431,6 +452,104 @@ public:
   /** \brief Destructor
    */
   virtual ~RovioNode() {}
+
+  static bool ensureDirectory(const std::string& directory)
+  {
+    if (directory.empty())
+      return false;
+    if (directory == "/")
+      return true;
+
+    std::string current = directory[0] == '/' ? "/" : "";
+    std::stringstream ss(directory);
+    std::string token;
+
+    while (std::getline(ss, token, '/'))
+    {
+      if (token.empty())
+        continue;
+      if (!current.empty() && current.back() != '/')
+        current += "/";
+      current += token;
+      if (::mkdir(current.c_str(), 0755) != 0 && errno != EEXIST)
+      {
+        ROS_WARN_STREAM("[dvc_diag] Failed creating directory: " << current << " errno=" << errno);
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void initDvcDiagLogging()
+  {
+    if (!dvc_diag_enabled_)
+      return;
+
+    if (dvc_diag_output_dir_.empty())
+    {
+      ROS_WARN_STREAM("[dvc_diag] dvc_diag_enabled is true but dvc_diag_output_dir is empty. Disable diagnostic logging.");
+      dvc_diag_enabled_ = false;
+      return;
+    }
+
+    if (!ensureDirectory(dvc_diag_output_dir_))
+    {
+      ROS_WARN_STREAM("[dvc_diag] Cannot create output directory: " << dvc_diag_output_dir_);
+      dvc_diag_enabled_ = false;
+      return;
+    }
+
+    if (dvc_run_id_.empty())
+    {
+      std::ostringstream oss;
+      oss << "run_" << ros::WallTime::now().toNSec();
+      dvc_run_id_ = oss.str();
+    }
+
+    const std::string diag_file = dvc_diag_output_dir_ + "/dvc_diag_" + dvc_run_id_ + ".csv";
+    dvc_diag_stream_.open(diag_file.c_str(), std::ios::out | std::ios::trunc);
+    if (!dvc_diag_stream_.good())
+    {
+      ROS_WARN_STREAM("[dvc_diag] Failed to open: " << diag_file);
+      dvc_diag_enabled_ = false;
+      return;
+    }
+
+    dvc_diag_stream_ << "timestamp,cond,inlier_ratio,trace_R_used,minEig_R_used,use_radar_update,runtime_reve_ms,"
+                        "runtime_backend_ms,radar_scan_callback_count,row_id\n";
+    dvc_diag_stream_.flush();
+    ROS_INFO_STREAM("[dvc_diag] Logging enabled: " << diag_file);
+  }
+
+  void writeDvcDiagRow(const double timestamp,
+                       const reve::RadarEstimationDiag& diag,
+                       const Eigen::Matrix3d* cov_v_b_r,
+                       const int use_radar_update,
+                       const double runtime_reve_ms,
+                       const double runtime_backend_ms)
+  {
+    if (!dvc_diag_enabled_ || !dvc_diag_stream_.good())
+      return;
+
+    double trace_R = std::numeric_limits<double>::quiet_NaN();
+    double minEig  = std::numeric_limits<double>::quiet_NaN();
+
+    if (cov_v_b_r != nullptr && cov_v_b_r->allFinite())
+    {
+      const Eigen::Matrix3d sym_cov = 0.5 * ((*cov_v_b_r) + cov_v_b_r->transpose());
+      trace_R                       = sym_cov.trace();
+      Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(sym_cov);
+      if (es.info() == Eigen::Success)
+      {
+        minEig = es.eigenvalues().minCoeff();
+      }
+    }
+
+    dvc_diag_stream_ << std::fixed << std::setprecision(9) << timestamp << "," << diag.cond << "," << diag.inlier_ratio
+                     << "," << trace_R << "," << minEig << "," << use_radar_update << "," << runtime_reve_ms << ","
+                     << runtime_backend_ms << "," << radar_scan_callback_count_ << "," << dvc_diag_rows_++ << "\n";
+    dvc_diag_stream_.flush();
+  }
 
   /** \brief Tests the functionality of the rovio node.
    *
@@ -779,6 +898,7 @@ public:
   void radarScanCallback(const sensor_msgs::PointCloud2ConstPtr& radar_scan)
   {
     std::lock_guard<std::mutex> lock(m_filter_);
+    radar_scan_callback_count_++;
     // clear imu buffer --> collect imu measurements during radar scan for improved omega
     most_recent_imus_.clear();
     most_recent_radar_scan_ = *radar_scan;
@@ -788,11 +908,18 @@ public:
   {
     Eigen::Vector3d v_b_r;
     Eigen::Matrix3d cov_v_b_r;
+    reve::RadarEstimationDiag radar_diag;
+    double runtime_reve_ms    = std::numeric_limits<double>::quiet_NaN();
+    double runtime_backend_ms = std::numeric_limits<double>::quiet_NaN();
 
-    if (radar_body_estimator_->estimate(most_recent_radar_scan_, w, v_b_r, cov_v_b_r))
+    const double t_reve_start = ros::WallTime::now().toSec();
+
+    if (radar_body_estimator_->estimate(most_recent_radar_scan_, w, v_b_r, cov_v_b_r, &radar_diag))
     {
+      runtime_reve_ms = (ros::WallTime::now().toSec() - t_reve_start) * 1000.0;
       if (init_state_.isInitialized())
       {
+        const double t_backend_start = ros::WallTime::now().toSec();
         std::get<2>(mpFilter_->mUpdates_).setMeasurementNoise(cov_v_b_r);
 
         velocityUpdateMeas_.vel() = v_b_r;
@@ -801,11 +928,35 @@ public:
         mpFilter_->template addUpdateMeas<2>(velocityUpdateMeas_,
                                              most_recent_radar_scan_.header.stamp.toSec() + 10.0e-3);
         updateAndPublish();
+        runtime_backend_ms = (ros::WallTime::now().toSec() - t_backend_start) * 1000.0;
+        writeDvcDiagRow(most_recent_radar_scan_.header.stamp.toSec(),
+                        radar_diag,
+                        &cov_v_b_r,
+                        1,
+                        runtime_reve_ms,
+                        runtime_backend_ms);
+      }
+      else
+      {
+        // estimation succeeded but update not used because filter not initialized yet
+        writeDvcDiagRow(most_recent_radar_scan_.header.stamp.toSec(),
+                        radar_diag,
+                        &cov_v_b_r,
+                        0,
+                        runtime_reve_ms,
+                        runtime_backend_ms);
       }
     }
     else
     {
+      runtime_reve_ms = (ros::WallTime::now().toSec() - t_reve_start) * 1000.0;
       ROS_INFO_STREAM("[radarScanCallback]: Ego velocity failed");
+      writeDvcDiagRow(most_recent_radar_scan_.header.stamp.toSec(),
+                      radar_diag,
+                      nullptr,
+                      0,
+                      runtime_reve_ms,
+                      runtime_backend_ms);
     }
     most_recent_radar_scan_.header.stamp = ros::TIME_MIN;
   }

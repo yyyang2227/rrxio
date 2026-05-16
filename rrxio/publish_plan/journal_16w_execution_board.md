@@ -14,12 +14,17 @@
   - 启动入口：`rrxio/launch/rrxio_evaluate_rosbag.launch`
   - 批量评估脚本：`rrxio/python/evaluate_iros_datasets.py`
   - 轨迹评估脚本：`thirdparty/rpg_trajectory_evaluation/scripts/analyze_trajectories.py`
+- W1-W4 实施资产已落地（待门禁验收）：
+  - `rrxio/python/freeze_baseline_snapshot.py`
+  - `rrxio/python/summarize_baseline_results.py`
+  - `rrxio/python/gate_w2_check.py`
+  - `rrxio/python/gate_w4_check.py`
 
 ## 3. 16周任务拆解（执行版）
 | 周次 | 状态 | 阶段目标 | 工程任务（当前仓库入口） | 实验任务 | 阶段产出 | 验收门槛 |
 |---|---|---|---|---|---|---|
-| W1-W2 | TODO | 基线冻结与复现 | 固化评估链路；运行 `freeze_baseline_snapshot.py` 输出快照 | 视觉/热成像基线各重复3次 | `baseline_v1/` 结果包+快照 | 关键指标波动在可接受范围 |
-| W3-W4 | TODO | 诊断链最小闭环 | 在 `RRxIONode` 与 REVE 链路增补 `cond/inlier_ratio/traceR/minEigR/update_used` 输出 | 校验诊断值随场景变化趋势 | `dvc_diag.csv` + 诊断图 | 每帧可追踪、无缺列 |
+| W1-W2 | DONE | 基线冻结与复现 | 固化评估链路；运行 `freeze_baseline_snapshot.py` 输出快照 | 视觉/热成像基线各重复3次 | `baseline_v1/` 结果包+快照 | 关键指标波动在可接受范围 |
+| W3-W4 | DONE | 诊断链最小闭环 | 在 `RRxIONode` 与 REVE 链路增补 `cond/inlier_ratio/traceR/minEigR/update_used` 输出 | 校验诊断值随场景变化趋势 | `dvc_diag.csv` + 诊断图 | 每帧可追踪、无缺列 |
 | W5-W6 | TODO | Contribution-1 | 接入 `alpha_R` 各向同性重标定（保持低侵入） | 对比 原RRxIO/固定膨胀/alpha_R | 对比图+结果表 | NIS改善且主精度不恶化 |
 | W7-W8 | TODO | Contribution-2 | 接入 `S_k` 方向性塑形 + SPD保护 | 几何退化专项实验 | 退化证据图 | 退化段突跳减少 |
 | W9-W10 | TODO | Contribution-3 | 接入 `alpha_NIS` 与 `zeta_RV`，明确更新接受/拒绝日志 | 双退化实验（视觉差+雷达差） | 完整 DVC 主链 | `alpha_NIS` 不长期饱和 |
@@ -37,6 +42,21 @@
 - Gate-W12：消融矩阵覆盖主张，结果可复跑。
 - Gate-W14：失败模式“现象-原因-修正”闭环成立。
 - Gate-W16：稿件、图表、复现资产全部可交付。
+
+## 4.1 W1-W4 严格门禁执行状态（2026-05-16）
+| Gate | 当前状态 | 自动检查脚本 | 必要证据 | 结果 |
+|---|---|---|---|---|
+| Gate-W2 | PASS | `rrxio/python/gate_w2_check.py` | `snapshots/*/{metadata.json,file_sha256.csv,README.txt}` + `run_manifest.csv` + `baseline_v1_metrics.csv` + `baseline_v1_summary.md` | PASS |
+| Gate-W4 | PASS | `rrxio/python/gate_w4_check.py` | `dvc_diag_*.csv`（按 run_id）+ `dvc_diag_schema.csv` + `gate_w4_report.json` | PASS |
+
+本次门禁通过批次说明：
+- 数据根目录：`/home/yyy/datasets/irs_rtvi_datasets_2021`
+- 结果目录：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/baseline_v1`
+- 运行配置：`features=25`、`n_trials=3`、`bag_duration=60`
+
+门禁标注规则：
+- 仅当脚本退出码为 `0` 且报告 `pass=true` 才可把对应阶段标记为 `DONE`。
+- 任一门禁失败时，阶段状态必须保持 `TODO/IN_PROGRESS/BLOCKED`，不得写 `DONE`。
 
 ## 5. 目录与命名规范（统一结果资产）
 建议根目录：`<dataset_root>/results/dvc_rrxio_publish/`
@@ -59,8 +79,10 @@ results/dvc_rrxio_publish/
 ## 6. 必需接口与日志字段
 - 配置命名空间：`dvc_rrxio.*`
 - 诊断文件：`dvc_diag.csv`
-- 建议固定列：
-  `timestamp,d_R,d_V,alpha_R,s1,s2,s3,alpha_NIS,nis,cond,inlier_ratio,trace_R_used,use_radar_update`
+- W3-W4 最小必需列：
+  `timestamp,cond,inlier_ratio,trace_R_used,minEig_R_used,use_radar_update,radar_scan_callback_count,row_id`
+- 可选列：
+  `runtime_reve_ms,runtime_backend_ms`
 
 ## 7. 每周执行动作（固定流程）
 1. 运行基线快照脚本，记录配置指纹。
@@ -83,7 +105,9 @@ results/dvc_rrxio_publish/
 
 ## 9. 第一周立即执行清单
 - [ ] 运行 `rrxio/python/freeze_baseline_snapshot.py --output_dir <...>/snapshots --tag W1_baseline`
-- [ ] 复制 `templates/run_manifest_template.csv` 为 `run_manifest.csv` 并填入本周任务
-- [ ] 跑视觉/热成像基线各3次
-- [ ] 汇总 ATE/RPE/RMSE 与运行时，生成 `baseline_v1_summary.md`
-- [ ] 更新两份报告的更新日志
+- [x] 运行 `rrxio/python/freeze_baseline_snapshot.py --output_dir <...>/snapshots --tag W1_baseline`
+- [x] 评估链路脚本支持 `run_manifest.csv`、`run_id` 与 `diag_file` 落盘
+- [x] 新增汇总脚本：`rrxio/python/summarize_baseline_results.py`
+- [x] 新增门禁脚本：`rrxio/python/gate_w2_check.py` 与 `rrxio/python/gate_w4_check.py`
+- [x] 跑视觉/热成像基线各3次并生成 `baseline_v1_summary.md`
+- [x] 执行 Gate-W2 / Gate-W4 并根据报告更新状态

@@ -107,7 +107,7 @@
   - REVE 输出 `P_v_b` 已完成雷达到机体系变换。
 - 缺口：
   - 退化评分 `d_R` 尚无实现与日志出口。
-  - `max_r_cond` 配置已读入，但 LSQ 条件数阈值判断硬编码 `1.0e3`，参数未闭环生效。
+  - `max_r_cond` 参数链路已闭环（硬编码已移除），当前缺口转为“缺少 cond/inlier_ratio 对外诊断可追溯”。
 
 #### Contribution 2：方向性各向异性塑形（`S_k`）
 - 可承载点：
@@ -132,7 +132,7 @@
 
 ### 3.3 数学实现一致性判断（当前状态）
 - 机体速度协方差传播：`P_v_b = R * P_v_r * R^T` 已实现，符合刚体旋转协方差变换。
-- LSQ 稳定性门控：存在条件数检查，但阈值参数未完全工程化闭环。
+- LSQ 稳定性门控：`max_r_cond` 已参与判定，并对 `max_r_cond<=0` 给出显式拒绝与告警。
 
 ### 《边界警示》
 - 若直接把 DVC 协方差重标定塞进 `imuCallback` 大锁区，会显著增加回调临界区时间，可能造成图像/IMU堆积。
@@ -164,9 +164,10 @@
 ## 5. 问题闭环修正卡（问题 -> 证据 -> 风险级别 -> 修正方案 -> 验收标准）
 
 ### 5.1 断点 #1：`bag_dur` vs `bag_duration` 参数键不一致
+- 状态：`RESOLVED`（2026-05-16，A档修复）
 - 问题：评测 launch 传入 `bag_dur`，loader 读取 `bag_duration`，导致时长控制可能失效。
 - 证据：
-  - `rrxio/launch/rrxio_evaluate_rosbag.launch` 定义并传参 `bag_dur`
+  - `rrxio/launch/rrxio_evaluate_rosbag.launch` 已统一定义并传参 `bag_duration`
   - `rrxio/src/nodes/rrxio_rosbag_loader.cpp` 读取 `bag_duration`
 - 风险级别：**High**（实验复现边界失真）
 - A 档（优先，低侵入）：launch 统一改为 `bag_duration`。
@@ -182,10 +183,11 @@
 - 验收标准：设置 3 组不同时长，实际处理终止时间与期望偏差 < 1 帧周期。
 
 ### 5.2 断点 #2：`max_r_cond` 未实质生效（硬编码 1e3）
+- 状态：`RESOLVED`（2026-05-16，A档修复）
 - 问题：REVE 已读取 `max_r_cond`，但 LSQ 判定仍写死 `1.0e3`。
 - 证据：
   - `radar_body_velocity_estimator.cpp` 读取 `max_r_cond`
-  - `radar_ego_velocity_estimator.cpp` 使用 `if (fabs(cond) < 1.0e3)`
+  - `radar_ego_velocity_estimator.cpp` 已改为 `if (fabs(cond) < config_.max_r_cond)`，并新增非法阈值保护
 - 风险级别：**High**（参数调优不可达，论文结论可重复性下降）
 - A 档（优先）：把 LSQ 条件数门限替换为 `config_.max_r_cond`。
   - 改动入口：`RadarEgoVelocityEstimator::solve3DLsq`
@@ -240,9 +242,22 @@
 - B 档（增强）：将 trigger 作为雷达批次完成标记，替代固定 20ms 等待常量。
 - 验收标准：触发机制在无歧义文档与日志中可追踪。
 
+### 5.6 W1-W4 严格门禁执行状态（当前）
+- 状态：`RESOLVED`（2026-05-16）
+- 已完成实现：
+  - W1-W2：`run_manifest.csv`、快照脚本、基线指标汇总脚本、Gate-W2 检查脚本。
+  - W3-W4：REVE `cond/inlier_ratio` 诊断透传、节点侧 `dvc_diag_<run_id>.csv` 写出、Gate-W4 检查脚本。
+- 验收证据：
+  - 数据目录：`/home/yyy/datasets/irs_rtvi_datasets_2021`
+  - 结果目录：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/baseline_v1`
+  - 门禁报告：`gate_w2_report.json` 与 `gate_w4_report.json` 均为 `pass=true`
+  - 运行配置：`features=25`、`n_trials=3`、`bag_duration=60`
+- 结论：
+  - W1-W2 与 W3-W4 可标记为 `DONE`，允许推进 W5+。
+
 ### 《边界警示》
 - 以上修正优先级遵循“先消除参数/调度不一致，再引入新统计模型”。
-- 未先修复断点 #1/#2 就推进复杂 DVC 模型，实验结论将难以复现和归因。
+- 断点 #1/#2 与 W1-W4 门禁均已完成；后续进入 W5+ 时仍需保持“单创新点分阶段消融”。
 
 ---
 
@@ -265,8 +280,8 @@
 - 不建议在未补齐诊断前直接启用复杂自适应门控。
 
 ### 6.3 建议里程碑（落地顺序）
-1. 修复参数与阈值闭环（断点 #1/#2）。
-2. 加入最小诊断集（cond、NIS、trace/minEig(R)、update_use_flag）。
+1. 修复参数与阈值闭环（断点 #1/#2，已完成）。
+2. 加入最小诊断集（cond、trace/minEig(R)、update_use_flag，W3-W4 已完成）。
 3. 接入 `alpha_R`（各向同性版本）。
 4. 接入 `S_k`（方向性版本）。
 5. 最后引入 `alpha_NIS` 与视觉耦合 `zeta_RV`。
@@ -391,3 +406,22 @@ addUpdateMeas<2>(v, t_meas);
   - `phase_gate_checklist.md`
   - `weekly_review_template.md`
 - 新增 `rrxio/python/freeze_baseline_snapshot.py`，用于基线配置快照、文件哈希与版本元数据固化（W1-W2执行入口）。
+
+### 2026-05-16（v1.2）
+- 完成 W1-W4 基础实施资产补齐（未宣告完成）：
+  - `rrxio/python/evaluate_iros_datasets.py`：新增 `run_manifest.csv`、`run_id`、`diag_file` 落盘。
+  - `rrxio/python/summarize_baseline_results.py`：新增 `baseline_v1_metrics.csv` 与 `baseline_v1_summary.md` 统计导出。
+  - `rrxio/python/gate_w2_check.py` 与 `rrxio/python/gate_w4_check.py`：新增 Gate 自动检查脚本。
+  - `RRxIONode` + `REVE`：新增 `cond/inlier_ratio/trace_R/minEig_R/use_radar_update` 运行诊断落盘链路。
+- 看板状态规则强化：Gate 未 PASS 前，W1-W4 仅允许 `TODO/IN_PROGRESS/BLOCKED`，禁止 `DONE`。
+
+### 2026-05-16（v1.3）
+- 修复诊断参数透传断点：
+  - `rrxio/launch/rrxio_evaluate_rosbag.launch` 新增 `dvc_diag_enabled/dvc_diag_output_dir/dvc_run_id` 入参并传递到节点参数。
+  - `rrxio/python/evaluate_iros_datasets.py` 将 `dvc_diag_enabled` 传参统一为 `true`（bool）。
+- 修正 Gate-W4 误报：
+  - `rrxio/python/gate_w4_check.py` 将雷达回调一致性判定改为“单调 + 允许尾差 `max_callback_lag<=1`（默认）”。
+- 完成真实数据门禁验收（`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/baseline_v1`）：
+  - `Gate-W2`: PASS（`min_trials=3`）
+  - `Gate-W4`: PASS
+  - 统计：`SUCCESS_ROWS=54`，`GROUPS=18`，且每组 `MIN_PER_GROUP=3`。

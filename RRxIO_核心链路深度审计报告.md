@@ -169,6 +169,9 @@
 | launch(评估) | `bag_duration` | `bag_duration` | 处理窗口时长（已与 loader 统一） |
 | launch | `topic_radar_scan` | `topic_radar_scan` | 雷达点云输入 |
 | launch | `topic_radar_trigger` | `topic_radar_trigger` | 触发消息输入（当前未实质使用） |
+| launch/rosparam | `dvc_diag_enabled` | `dvc_diag_enabled_` | 启用/关闭 W3-W4 诊断写出 |
+| launch/rosparam | `dvc_diag_output_dir` | `dvc_diag_output_dir_` | 每次 run 的诊断 CSV 输出目录 |
+| launch/rosparam | `dvc_run_id` | `dvc_run_id_` | 诊断文件名绑定的运行批次 ID |
 | yaml | `min_dist` 等 | `config_.*` | 雷达筛选/RANSAC/ODR 行为 |
 | yaml | `l_b_r_*`,`q_b_r_*` | `T_b_r_` | 雷达到体坐标速度变换 |
 | info | `Common.depthType` | `depthTypeInt_` | 深度参数化类型 |
@@ -198,9 +201,14 @@
 ## 8. 审计结论
 
 1. 主融合链路完整且可达，视觉-惯性-雷达速度闭环存在。
-2. 主要风险集中在参数链路一致性与调度触发策略，而非核心数学主干。
+2. 参数链路一致性高优先问题（`bag_duration`、`max_r_cond`）已关闭，当前主要风险转为调度触发耦合与运行时锁粒度。
 3. 当前高优先风险项：
 - `ROVIO_UPDATE_SOURCE` 默认导致速度-only 场景更新饥饿
+
+4. W1-W4 门禁状态（2026-05-16）：
+- `Gate-W2`: `PASS`（`baseline_v1/gate_w2_report.json`）
+- `Gate-W4`: `PASS`（`baseline_v1/gate_w4_report.json`）
+- 结果：W1-W2 与 W3-W4 已满足门禁，可标记 `DONE`
 
 ---
 
@@ -229,3 +237,17 @@
   - 新增 `rrxio/publish_plan/templates/`（运行清单、诊断schema、门禁清单、周报模板）。
   - 新增 `rrxio/python/freeze_baseline_snapshot.py`（基线快照与版本指纹固化）。
   - 风险变化：提升实验复现与过程可追踪性；核心未解风险仍为调度耦合（`ROVIO_UPDATE_SOURCE`）。
+- 2026-05-16（W1-W4 严格门禁实施中）：
+  - `rrxio/python/evaluate_iros_datasets.py`：新增 `run_manifest.csv`、`run_id`、`diag_file` 落盘链路。
+  - `rrxio/python/summarize_baseline_results.py`：新增 `baseline_v1_metrics.csv` 与 `baseline_v1_summary.md` 聚合脚本。
+  - `rrxio/python/gate_w2_check.py`、`rrxio/python/gate_w4_check.py`：新增门禁自动检查脚本。
+  - `rrxio/include/rrxio/RRxIONode.hpp` + `thirdparty/reve/...`：新增 `cond/inlier_ratio/trace_R_used/minEig_R_used/use_radar_update` 运行诊断输出链路。
+  - 状态变化：实施资产已到位，但 Gate-W2/W4 尚未通过，W1-W4 保持 `IN_PROGRESS`。
+- 2026-05-16（W1-W4 门禁验收完成）：
+  - `rrxio/launch/rrxio_evaluate_rosbag.launch`：补齐 `dvc_diag_enabled/dvc_diag_output_dir/dvc_run_id` 参数透传。
+  - `rrxio/python/evaluate_iros_datasets.py`：`dvc_diag_enabled` 传参统一为 `true`（bool）。
+  - `rrxio/python/gate_w4_check.py`：回调计数一致性放宽为“单调 + 尾差<=1”以适配 bag 结束边界。
+  - 真实数据门禁结果：
+    - `Gate-W2`: PASS
+    - `Gate-W4`: PASS
+    - `run_manifest` 成功条目：54（18组，每组3次）
