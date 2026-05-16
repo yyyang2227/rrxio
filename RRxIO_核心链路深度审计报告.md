@@ -1,0 +1,224 @@
+# RRxIO 核心链路深度审计报告（`rrxio` + 直接调用依赖）
+
+## 文档信息
+- 编码：UTF-8
+- 生成日期：2026-05-16
+- 适用范围：`rrxio` 主包及其运行时直接调用依赖（`thirdparty/rovio`、`thirdparty/reve/radar_ego_velocity_estimator`）
+
+## 审计对象与证据基线
+1. 主链路代码
+- `/home/yyy/DVC-RRxIO_ws/src/rrxio/rrxio/include/rrxio/RRxIONode.hpp`
+- `/home/yyy/DVC-RRxIO_ws/src/rrxio/rrxio/include/rrxio/RRxIOFilter.hpp`
+- `/home/yyy/DVC-RRxIO_ws/src/rrxio/rrxio/include/rrxio/VelocityUpdate.hpp`
+- `/home/yyy/DVC-RRxIO_ws/src/rrxio/rrxio/src/nodes/rrxio_rosbag_loader.cpp`
+- `/home/yyy/DVC-RRxIO_ws/src/rrxio/rrxio/src/nodes/rrxio_node.cpp`
+
+2. 直接运行时依赖
+- `/home/yyy/DVC-RRxIO_ws/src/rrxio/thirdparty/rovio/lightweight_filtering/include/lightweight_filtering/FilterBase.hpp`
+- `/home/yyy/DVC-RRxIO_ws/src/rrxio/thirdparty/rovio/lightweight_filtering/include/lightweight_filtering/Update.hpp`
+- `/home/yyy/DVC-RRxIO_ws/src/rrxio/thirdparty/rovio/lightweight_filtering/include/lightweight_filtering/Prediction.hpp`
+- `/home/yyy/DVC-RRxIO_ws/src/rrxio/thirdparty/rovio/include/rovio/FilterStates.hpp`
+- `/home/yyy/DVC-RRxIO_ws/src/rrxio/thirdparty/rovio/include/rovio/ImuPrediction.hpp`
+- `/home/yyy/DVC-RRxIO_ws/src/rrxio/thirdparty/rovio/include/rovio/ImgUpdate.hpp`
+- `/home/yyy/DVC-RRxIO_ws/src/rrxio/thirdparty/rovio/include/rovio/PoseUpdate.hpp`
+- `/home/yyy/DVC-RRxIO_ws/src/rrxio/thirdparty/reve/radar_ego_velocity_estimator/src/radar_body_velocity_estimator.cpp`
+- `/home/yyy/DVC-RRxIO_ws/src/rrxio/thirdparty/reve/radar_ego_velocity_estimator/src/radar_ego_velocity_estimator.cpp`
+
+3. 配置/构建入口
+- `/home/yyy/DVC-RRxIO_ws/src/rrxio/rrxio/CMakeLists.txt`
+- `/home/yyy/DVC-RRxIO_ws/src/rrxio/rrxio/package.xml`
+- `/home/yyy/DVC-RRxIO_ws/src/rrxio/rrxio/launch/rrxio_visual_iros_demo.launch`
+- `/home/yyy/DVC-RRxIO_ws/src/rrxio/rrxio/launch/rrxio_thermal_iros_demo.launch`
+- `/home/yyy/DVC-RRxIO_ws/src/rrxio/rrxio/launch/rrxio_evaluate_rosbag.launch`
+- `/home/yyy/DVC-RRxIO_ws/src/rrxio/rrxio/launch/configs/default_params_radar_ego_velocity_estimation.yaml`
+- `/home/yyy/DVC-RRxIO_ws/src/rrxio/rrxio/launch/configs/rrxio_iros_datasets_visual.info`
+- `/home/yyy/DVC-RRxIO_ws/src/rrxio/rrxio/launch/configs/rrxio_iros_datasets_thermal.info`
+
+---
+
+## 1. 宏观架构与拓扑（Macro Architecture）
+
+### 1.1 执行拓扑主链
+`*.launch -> rrxio_rosbag_loader_[10|15|25] -> RovioNode<mtFilter> -> RovioFilter -> FilterBase 时间线调度 -> Prediction/Update 子模型 -> ROS 发布`
+
+### 1.2 模块生态位
+- `RRxIONode`：运行时编排层（回调接入、互斥锁、时间戳处理、发布）。
+- `RRxIOFilter`：参数注册与更新器装配层（`ImgUpdate/PoseUpdate/VelocityUpdate` 挂接）。
+- `LWF::FilterBase`：滤波调度内核（按时间线推进预测和更新）。
+- `REVE`：雷达速度前端估计器（`点云+角速度 -> v_b + P_v_b`）。
+
+### 1.3 生命周期
+1. 初始化：`readFromInfo -> refreshProperties -> 构造节点 -> 注册订阅/发布`。
+2. 运行：IMU/图像/位姿/速度/雷达数据持续入队。
+3. 推进：`updateAndPublish -> updateSafe` 做时间有序融合。
+4. 退出：rosbag 模式读完 bag 结束；在线模式依赖 `ros::spin()`。
+
+### 边界警示
+1. 在线节点在 `rrxio/CMakeLists.txt` 中被注释，且注释行存在 `cd_add_executable` 拼写错误，直接解注会编译失败。
+2. 默认 `filter_config` 路径来自 `rovio` 包路径，部署环境若 `rovio` 包不可见会失败。
+3. `rrxio_evaluate_rosbag.launch` 传参 `bag_dur`，但 loader 读取 `bag_duration`，评估模式时长限制参数失效。
+
+---
+
+## 2. 数据结构与状态机（Data & State Management）
+
+### 2.1 关键状态结构
+`FilterState::state_` 核心状态包含：
+- `WrWM`：世界到 IMU 的位置向量
+- `MvM`：IMU 速度状态
+- `acb/gyb`：加计/陀螺偏置
+- `qWM`：IMU 姿态
+- `MrMC/qCM`：IMU-相机外参
+- `fea`：特征方位+深度参数
+
+### 2.2 状态机 A：滤波初始化
+`WaitForInitUsingAccel` / `WaitForInitExternalPose` -> `Initialized`
+
+### 2.3 状态机 B：特征跟踪
+`UNKNOWN / NOT_IN_FRAME / FAILED_ALIGNEMENT / FAILED_TRACKING / TRACKED`
+
+### 2.4 状态机 C：时间线调度
+- 预测队列：`predictionTimeline_.measMap_`
+- 更新队列：`updateTimelineTuple_`（图像/位姿/速度）
+- `updateSafe` 在安全时间推进并清理历史测量
+
+### 边界警示
+1. `updateToUpdateMeasOnly_ = true` 时，没有更新测量就不会仅靠预测推进 `safe_`。
+2. `updateAndPublish` 由 `ROVIO_UPDATE_SOURCE` 指定队列驱动，默认是图像队列，雷达-only 场景可能更新饥饿。
+3. `radarTriggerCallback` 当前为空实现，触发消息未参与实质同步控制。
+
+---
+
+## 3. 核心逻辑块与数学映射（Microscopic Review）
+
+### 3.1 IMU 预测模型（`ImuPrediction`）
+- 姿态：指数映射积分角速度。
+- 平移/速度/偏置：离散模型推进。
+- 特征：在相机系传播方位+深度，并显式构建状态/噪声 Jacobian。
+
+### 3.2 图像更新（`ImgUpdate`）
+- `useDirectMethod=true`：光度残差（`A_red`, `b_red`）驱动更新。
+- 否则：重投影误差更新。
+- 后处理：特征质量统计、剔除劣质特征、补充新特征、可选零速更新。
+
+### 3.3 位姿更新（`PoseUpdate`）
+- 位置创新：外部惯导系与内部系对齐误差。
+- 姿态创新：`qVM * qWM^-1 * qWI * meas^-1`。
+- 可选按测量协方差缩放更新噪声（`useOdometryCov`）。
+
+### 3.4 速度更新（`VelocityUpdate`，RRxIO 增量）
+- 创新：`y = qAM * MvM + z_vel + n`。
+- 支持逐帧 `setMeasurementNoise(cov)` 注入雷达速度协方差。
+- `MahalanobisThVel` 通过配置暴露。
+
+### 3.5 雷达速度估计（REVE）
+- 流程：点筛选 -> 零速检测 -> RANSAC + LSQ -> 可选 ODR 细化。
+- 刚体速度变换：`v_b = R_b_r * v_r - (ω_b × l_b_r)`。
+- 协方差传播：`P_v_b = R_b_r * P_v_r * R_b_r^T`。
+
+### 3.6 调度器行为（LWF）
+`update()` 循环执行：
+`预测到下一更新时刻 -> 执行该时刻可用更新 -> 继续推进`。
+
+### 3.7 工程优化点
+- `pclMsg_` / `patchMsg_` 一次分配、循环复用。
+- 维度模板编译期定型（`ROVIO_NMAXFEATURE` 等）。
+- 图像金字塔缓存复用。
+
+### 边界警示（高优先）
+1. `max_r_cond` 参数被读取但 LSQ 判据硬编码 `1.0e3`，配置项实际上未生效。
+2. 在线节点读取了 `timeshift_cam_imu` 参数但未真正使用。
+3. 雷达角速度用最多 20 个 IMU 简单平均，未做时间加权，机动工况下误差放大。
+4. 大锁覆盖 `updateAndPublish` 和雷达估计，存在吞吐与回调阻塞风险。
+
+---
+
+## 4. 动态执行流程与生命周期模拟（Execution Workflow）
+
+### 4.1 场景 A：IMU + 图像主链
+`imuCallback -> addPredictionMeas -> imgCallback -> addUpdateMeas<0> -> updateAndPublish -> updateSafe -> 预测+图像更新 -> 发布`
+
+### 4.2 场景 B：雷达速度闭环
+`radarScanCallback(clear imu buffer) -> imuCallback 累积角速度 -> processRadarScan -> REVE estimate -> setMeasurementNoise -> addUpdateMeas<2> -> updateAndPublish`
+
+### 4.3 场景 C：外部位姿更新链
+`groundtruthOdometryCallback -> PoseUpdateMeas(pos/att/cov) -> addUpdateMeas<1> -> updateAndPublish`
+
+### 4.4 线程模型
+- rosbag 模式：主线程近似串行调用。
+- 在线模式：默认单线程 `ros::spin()`；若改多线程 spinner，大锁将成为主要串行点。
+
+### 边界警示
+1. 雷达更新不一定被立即执行，受触发队列策略限制。
+2. 发布逻辑在锁内，慢发布会反压回调。
+3. trigger 话题当前不参与关键同步决策。
+
+---
+
+## 5. 参数 -> 代码变量 -> 行为影响映射（关键项）
+
+| 参数来源 | 参数键 | 代码变量 | 行为影响 |
+|---|---|---|---|
+| launch | `filter_config` | `filter_config` | 载入 `.info` 滤波配置 |
+| launch | `camera0_config` | `cameraCalibrationFile_[0]` | 覆盖相机标定路径 |
+| launch | `imu_topic_name` | `imu_topic_name` | IMU 输入源 |
+| launch | `cam0_topic_name` | `cam0_topic_name` | 图像输入源 |
+| launch | `timeshift_cam_imu` | `timeshift_cam_imu` | 离线图像时间平移 |
+| launch | `bag_start` | `bag_start` | 跳过 bag 前段 |
+| launch | `bag_duration` | `bag_duration` | 处理窗口时长 |
+| launch(评估) | `bag_dur` | 未被 loader 消费 | 参数失效（缺陷） |
+| launch | `topic_radar_scan` | `topic_radar_scan` | 雷达点云输入 |
+| launch | `topic_radar_trigger` | `topic_radar_trigger` | 触发消息输入（当前未实质使用） |
+| yaml | `min_dist` 等 | `config_.*` | 雷达筛选/RANSAC/ODR 行为 |
+| yaml | `l_b_r_*`,`q_b_r_*` | `T_b_r_` | 雷达到体坐标速度变换 |
+| info | `Common.depthType` | `depthTypeInt_` | 深度参数化类型 |
+| info | `MahalanobisThVel` | 速度更新门限 | 速度观测离群判据 |
+| 运行时 | `cov_v_b_r` | `setMeasurementNoise` | 逐帧自适应速度协方差 |
+
+---
+
+## 6. 差异化创新点（相对上游 `rovio`）
+
+1. 雷达体速度融合链接入（REVE + VelocityUpdate 协方差动态注入）。
+2. 速度更新门限参数暴露（`MahalanobisThVel`）。
+3. 调度触发策略增量（`ROVIO_UPDATE_SOURCE`）。
+4. 运行 I/O 与调试链增强（雷达话题、tracker 图像、离线评估脚本链）。
+
+---
+
+## 7. 测试场景与验收指标
+
+1. 视觉链路单驱动：验证图像更新消费、轨迹连续性、特征状态迁移。
+2. 雷达速度闭环：验证 `estimate -> setMeasurementNoise -> addUpdateMeas<2>` 成对出现。
+3. 时序边界：验证 `timeshift_cam_imu`、`bag_start`、`bag_duration` 生效，复现 `bag_dur` 失效。
+4. 失败路径：雷达估计失败时显式日志暴露，不产生伪成功更新。
+
+---
+
+## 8. 审计结论
+
+1. 主融合链路完整且可达，视觉-惯性-雷达速度闭环存在。
+2. 主要风险集中在参数链路一致性与调度触发策略，而非核心数学主干。
+3. 高优先修复项：
+- `bag_dur/bag_duration` 不一致
+- `max_r_cond` 配置未生效
+- `ROVIO_UPDATE_SOURCE` 默认导致速度-only 场景更新饥饿
+
+---
+
+## 9. 维护约定（后续代码改动时同步更新）
+
+从本次开始，后续每次代码改动完成后都按以下规则更新本文件：
+1. 在“更新日志”追加一条记录（日期、改动文件、影响链路、风险变化）。
+2. 若修改了输入输出接口（topic/service/参数），同步更新第 5 节映射表。
+3. 若修改了预测/更新数学实现，同步更新第 3 节对应小节。
+4. 若改动影响执行顺序或线程行为，同步更新第 4 节流程描述。
+
+---
+
+## 10. 更新日志
+
+- 2026-05-16：
+  - 新增本审计文档（首版）。
+  - 覆盖 `rrxio` 主链路与 `rovio/reve` 直接调用依赖。
+  - 记录高优先风险：`bag_dur` 参数失效、`max_r_cond` 未生效、更新触发队列策略风险。

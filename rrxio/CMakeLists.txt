@@ -6,7 +6,7 @@ find_package(OpenCV)
 
 catkin_simple()
 
-add_compile_options(-std=c++11)
+add_compile_options(-std=c++14)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++0x -march=native")
 set(ROVIO_NMAXFEATURE 15 CACHE STRING "Number of features for ROVIO")
 set(ROVIO_NCAM 1 CACHE STRING "Number of enabled cameras")
