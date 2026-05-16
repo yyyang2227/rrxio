@@ -14,7 +14,7 @@
     <arg name="enable_rviz"/>
     <arg name="shutdown_when_done"/>
     <arg name="bag_start"/>
-    <arg name="bag_dur" default="10000"/>
+    <arg name="bag_duration" default="10000"/>
 
     <arg name="config"/>
     <arg name="camera_config"/>
@@ -35,7 +35,7 @@
         <param name="cam0_topic_name" value="$(arg topic_cam)"/>
         <param name="topic_vel" type="str" value="not_used"/>
         <param name="bag_start" value="$(arg bag_start)"/>
-        <param name="bag_dur" value="$(arg bag_dur)"/>
+        <param name="bag_duration" value="$(arg bag_duration)"/>
         <param name="timeshift_cam_imu" value="$(arg timeshift_cam_imu)"/>
 
         <param name="topic_radar_trigger" value="$(arg topic_radar_trigger)"/>

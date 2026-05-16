@@ -56,7 +56,7 @@
 ### 边界警示
 1. 在线节点在 `rrxio/CMakeLists.txt` 中被注释，且注释行存在 `cd_add_executable` 拼写错误，直接解注会编译失败。
 2. 默认 `filter_config` 路径来自 `rovio` 包路径，部署环境若 `rovio` 包不可见会失败。
-3. `rrxio_evaluate_rosbag.launch` 传参 `bag_dur`，但 loader 读取 `bag_duration`，评估模式时长限制参数失效。
+3. 评估入口已统一使用 `bag_duration`（2026-05-16 修复）；旧脚本若仍传 `bag_dur` 将不再生效。
 
 ---
 
@@ -126,7 +126,7 @@
 - 图像金字塔缓存复用。
 
 ### 边界警示（高优先）
-1. `max_r_cond` 参数被读取但 LSQ 判据硬编码 `1.0e3`，配置项实际上未生效。
+1. `max_r_cond` 已接入 LSQ 判据（2026-05-16 修复）；当 `max_r_cond <= 0` 时会显式拒绝并告警。
 2. 在线节点读取了 `timeshift_cam_imu` 参数但未真正使用。
 3. 雷达角速度用最多 20 个 IMU 简单平均，未做时间加权，机动工况下误差放大。
 4. 大锁覆盖 `updateAndPublish` 和雷达估计，存在吞吐与回调阻塞风险。
@@ -166,7 +166,7 @@
 | launch | `timeshift_cam_imu` | `timeshift_cam_imu` | 离线图像时间平移 |
 | launch | `bag_start` | `bag_start` | 跳过 bag 前段 |
 | launch | `bag_duration` | `bag_duration` | 处理窗口时长 |
-| launch(评估) | `bag_dur` | 未被 loader 消费 | 参数失效（缺陷） |
+| launch(评估) | `bag_duration` | `bag_duration` | 处理窗口时长（已与 loader 统一） |
 | launch | `topic_radar_scan` | `topic_radar_scan` | 雷达点云输入 |
 | launch | `topic_radar_trigger` | `topic_radar_trigger` | 触发消息输入（当前未实质使用） |
 | yaml | `min_dist` 等 | `config_.*` | 雷达筛选/RANSAC/ODR 行为 |
@@ -190,7 +190,7 @@
 
 1. 视觉链路单驱动：验证图像更新消费、轨迹连续性、特征状态迁移。
 2. 雷达速度闭环：验证 `estimate -> setMeasurementNoise -> addUpdateMeas<2>` 成对出现。
-3. 时序边界：验证 `timeshift_cam_imu`、`bag_start`、`bag_duration` 生效，复现 `bag_dur` 失效。
+3. 时序边界：验证 `timeshift_cam_imu`、`bag_start`、`bag_duration` 生效，并确认评估入口不再接受 `bag_dur`。
 4. 失败路径：雷达估计失败时显式日志暴露，不产生伪成功更新。
 
 ---
@@ -199,9 +199,7 @@
 
 1. 主融合链路完整且可达，视觉-惯性-雷达速度闭环存在。
 2. 主要风险集中在参数链路一致性与调度触发策略，而非核心数学主干。
-3. 高优先修复项：
-- `bag_dur/bag_duration` 不一致
-- `max_r_cond` 配置未生效
+3. 当前高优先风险项：
 - `ROVIO_UPDATE_SOURCE` 默认导致速度-only 场景更新饥饿
 
 ---
@@ -222,3 +220,12 @@
   - 新增本审计文档（首版）。
   - 覆盖 `rrxio` 主链路与 `rovio/reve` 直接调用依赖。
   - 记录高优先风险：`bag_dur` 参数失效、`max_r_cond` 未生效、更新触发队列策略风险。
+- 2026-05-16（A档低侵入修正）：
+  - `rrxio/launch/rrxio_evaluate_rosbag.launch`：评估入口参数统一为 `bag_duration`（移除 `bag_dur`）。
+  - `thirdparty/reve/radar_ego_velocity_estimator/src/radar_ego_velocity_estimator.cpp`：LSQ 条件数门限由硬编码 `1.0e3` 改为 `config_.max_r_cond`，并新增 `max_r_cond<=0` 显式告警拒绝。
+  - 风险变化：关闭“参数名不一致”和“max_r_cond 不生效”两项缺陷；保留调度触发耦合风险（`ROVIO_UPDATE_SOURCE`）。
+- 2026-05-16（16周发表路径资产落地）：
+  - 新增 `rrxio/publish_plan/journal_16w_execution_board.md`（投稿执行看板）。
+  - 新增 `rrxio/publish_plan/templates/`（运行清单、诊断schema、门禁清单、周报模板）。
+  - 新增 `rrxio/python/freeze_baseline_snapshot.py`（基线快照与版本指纹固化）。
+  - 风险变化：提升实验复现与过程可追踪性；核心未解风险仍为调度耦合（`ROVIO_UPDATE_SOURCE`）。

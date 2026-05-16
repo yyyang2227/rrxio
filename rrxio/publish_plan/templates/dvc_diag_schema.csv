@@ -1,0 +1,18 @@
+field,type,unit,description,required
+timestamp,float64,s,measurement timestamp,true
+d_R,float64,-,radar degeneration score,true
+d_V,float64,-,visual degeneration score,true
+alpha_R,float64,-,radar covariance inflation factor,true
+s1,float64,-,anisotropic scale axis 1,true
+s2,float64,-,anisotropic scale axis 2,true
+s3,float64,-,anisotropic scale axis 3,true
+alpha_NIS,float64,-,online NIS feedback factor,true
+nis,float64,-,radar update NIS,true
+cond,float64,-,LSQ condition number,true
+inlier_ratio,float64,-,RANSAC inlier ratio,true
+trace_R_used,float64,(m/s)^2,trace of used radar covariance,true
+minEig_R_used,float64,(m/s)^2,min eigenvalue of used radar covariance,true
+use_radar_update,int,-,0 reject / 1 accept,true
+runtime_reve_ms,float64,ms,REVE runtime,false
+runtime_recalib_ms,float64,ms,recalibration runtime,false
+runtime_backend_ms,float64,ms,backend update runtime,false

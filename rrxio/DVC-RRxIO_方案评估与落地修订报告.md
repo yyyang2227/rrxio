@@ -383,3 +383,11 @@ addUpdateMeas<2>(v, t_meas);
 - 锁定 5 个关键断点并给出 A/B 两档修正策略。
 - 建立后续“每次代码改动后同步更新”维护机制。
 
+### 2026-05-16（v1.1）
+- 新增 `rrxio/publish_plan/journal_16w_execution_board.md`，将16周投稿路径落地为可执行看板（阶段门禁、周任务、验收口径）。
+- 新增 `rrxio/publish_plan/templates/` 模板集：
+  - `run_manifest_template.csv`
+  - `dvc_diag_schema.csv`
+  - `phase_gate_checklist.md`
+  - `weekly_review_template.md`
+- 新增 `rrxio/python/freeze_baseline_snapshot.py`，用于基线配置快照、文件哈希与版本元数据固化（W1-W2执行入口）。
