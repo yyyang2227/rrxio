@@ -255,6 +255,28 @@
 - 结论：
   - W1-W2 与 W3-W4 可标记为 `DONE`，允许推进 W5+。
 
+### 5.7 W5-W6 严格门禁执行状态（当前）
+- 状态：`RESOLVED`（2026-05-19）
+- 已完成实现：
+  - 节点侧接入 `dvc_rrxio.cov_mode={base,fixed,alpha_r}` 协方差模式切换。
+  - 接入中等增强 `alpha_R`（`cond + inlier_ratio + n_targets`）与 SPD 保护后再注入 `setMeasurementNoise`。
+  - 速度更新器输出 NIS 诊断（`nis_vel/is_outlier/seq`），并落盘到 `dvc_diag_<run_id>.csv`。
+  - 评估脚本支持三模式批跑并写入 `run_manifest.csv(cov_mode,config_tag)`。
+  - 新增 W6 汇总与门禁脚本：`summarize_w6_results.py`、`gate_w6_check.py`。
+- 验收证据：
+  - 数据目录：`/home/yyy/datasets/irs_rtvi_datasets_2021`
+  - 结果目录：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w6_alpha_r`
+  - 核心文件：`run_manifest.csv`、`w6_metrics.csv`、`w6_summary.md`、`w6_compare_metrics.png`、`w6_compare_nis.png`、`gate_w6_report.json`
+  - 全量覆盖：`9 序列 × 2 模态 × 3 次重复 × 3 模式 = 162`，且 `SUCCESS=162`
+  - 严格门禁：`gate_w6_check.py` 退出码 `0` 且 `pass=true`
+  - 关键指标（`alpha_r` vs `base`）：
+    - NIS 超限率：`5.7756% -> 2.2623%`（相对下降 `60.83%`，绝对下降 `3.513pp`）
+    - ATE 中位数：`0.113182 -> 0.101191`（未恶化）
+    - RPE 中位数：`0.074655 -> 0.074027`（未恶化）
+    - 运行时中位数：`10.111s -> 10.063s`（增量 `-0.48%`）
+- 结论：
+  - W5-W6 可标记为 `DONE`，可进入 W7-W8（`S_k`）阶段。
+
 ### 《边界警示》
 - 以上修正优先级遵循“先消除参数/调度不一致，再引入新统计模型”。
 - 断点 #1/#2 与 W1-W4 门禁均已完成；后续进入 W5+ 时仍需保持“单创新点分阶段消融”。
@@ -282,7 +304,7 @@
 ### 6.3 建议里程碑（落地顺序）
 1. 修复参数与阈值闭环（断点 #1/#2，已完成）。
 2. 加入最小诊断集（cond、trace/minEig(R)、update_use_flag，W3-W4 已完成）。
-3. 接入 `alpha_R`（各向同性版本）。
+3. 接入 `alpha_R`（各向同性版本，W5-W6 已完成并通过 Gate-W6）。
 4. 接入 `S_k`（方向性版本）。
 5. 最后引入 `alpha_NIS` 与视觉耦合 `zeta_RV`。
 
@@ -425,3 +447,18 @@ addUpdateMeas<2>(v, t_meas);
   - `Gate-W2`: PASS（`min_trials=3`）
   - `Gate-W4`: PASS
   - 统计：`SUCCESS_ROWS=54`，`GROUPS=18`，且每组 `MIN_PER_GROUP=3`。
+
+### 2026-05-19（v1.4）
+- 完成 W5-W6（Contribution-1）代码落地与严格门禁验收：
+  - `RRxIONode`：新增 `cov_mode(base|fixed|alpha_r)`、`alpha_R` 重标定、SPD 投影保护、W6 诊断列写出。
+  - `VelocityUpdate`：新增最近一次速度更新 `nis_vel/is_outlier/seq` 诊断导出接口。
+  - `rrxio_evaluate_rosbag.launch`：新增 `dvc_rrxio` W6 参数透传。
+  - `evaluate_iros_datasets.py`：支持三模式全量批跑与 `run_manifest(cov_mode/config_tag)`。
+  - 新增 `summarize_w6_results.py`、`gate_w6_check.py`。
+- 全量实验与门禁结论：
+  - 结果目录：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w6_alpha_r`
+  - 覆盖规模：`162` runs 全部成功。
+  - Gate-W6：`PASS`（`pass=true`，退出码 `0`）。
+- 风险变化：
+  - 已关闭 “`alpha_R` 缺失/NIS 无闭环” 风险。
+  - 保留 `ROVIO_UPDATE_SOURCE` 调度耦合与大锁临界区开销风险，进入 W7+ 前继续监控。

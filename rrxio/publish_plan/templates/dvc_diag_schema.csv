@@ -9,3 +9,12 @@ radar_scan_callback_count,uint64,-,cumulative radar scan callback counter,true
 row_id,uint64,-,monotonic row index per run,true
 runtime_reve_ms,float64,ms,REVE runtime,false
 runtime_backend_ms,float64,ms,backend update runtime,false
+cov_mode,string,-,covariance mode (base/fixed/alpha_r),false
+d_r,float64,-,radar degeneration score,false
+alpha_r,float64,-,isotropic inflation factor,false
+n_targets,uint,-,number of radar targets used by REVE,false
+n_inliers,uint,-,number of REVE inliers,false
+nis_vel,float64,-,velocity update Mahalanobis distance,false
+nis_valid,int,-,1 if NIS corresponds to committed radar update,false
+nis_exceed_95,int,-,1 if nis_vel > chi2_3_95 and nis_valid=1,false
+radar_update_committed,int,-,1 if radar update committed in backend,false

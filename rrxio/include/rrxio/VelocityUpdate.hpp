@@ -30,6 +30,9 @@
 #ifndef ROVIO_VELOCITYUPDATE_HPP_
 #define ROVIO_VELOCITYUPDATE_HPP_
 
+#include <cstdint>
+#include <limits>
+
 #include <ros/ros.h>
 
 #include "lightweight_filtering/common.hpp"
@@ -119,6 +122,13 @@ public:
   virtual ~VelocityOutlierDetection(){};
 };
 
+struct VelocityUpdateDiag
+{
+  double mahalanobis_distance = std::numeric_limits<double>::quiet_NaN();
+  bool is_outlier             = false;
+  uint64_t seq                = 0;
+};
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /** \brief Class, holding the zero velocity update
@@ -146,6 +156,7 @@ public:
   typedef typename Base::mtOutlierDetection mtOutlierDetection;
 
   QPD qAM_;  // Rotation between IMU (M) and coordinate frame where the velocity is expressed in (A)
+  VelocityUpdateDiag last_diag_;
 
   /** \brief Constructor.
    *
@@ -173,6 +184,11 @@ public:
                            const mtOutlierDetection& outlierDetection,
                            bool& isFinished)
   {
+    (void)filterState;
+    (void)meas;
+    last_diag_.mahalanobis_distance = outlierDetection.getMahalDistance(0);
+    last_diag_.is_outlier           = outlierDetection.isOutlier(0);
+    last_diag_.seq += 1;
     isFinished = true;
   }
 
@@ -181,6 +197,8 @@ public:
    * @param cov
    */
   void setMeasurementNoise(const Eigen::MatrixXd& cov) { Base::updnoiP_ = cov; }
+  const VelocityUpdateDiag& getLastDiag() const { return last_diag_; }
+  uint64_t getUpdateSeq() const { return last_diag_.seq; }
 
   /** \brief Compute the inovvation term
    *

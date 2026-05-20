@@ -25,7 +25,7 @@
 |---|---|---|---|---|---|---|
 | W1-W2 | DONE | 基线冻结与复现 | 固化评估链路；运行 `freeze_baseline_snapshot.py` 输出快照 | 视觉/热成像基线各重复3次 | `baseline_v1/` 结果包+快照 | 关键指标波动在可接受范围 |
 | W3-W4 | DONE | 诊断链最小闭环 | 在 `RRxIONode` 与 REVE 链路增补 `cond/inlier_ratio/traceR/minEigR/update_used` 输出 | 校验诊断值随场景变化趋势 | `dvc_diag.csv` + 诊断图 | 每帧可追踪、无缺列 |
-| W5-W6 | TODO | Contribution-1 | 接入 `alpha_R` 各向同性重标定（保持低侵入） | 对比 原RRxIO/固定膨胀/alpha_R | 对比图+结果表 | NIS改善且主精度不恶化 |
+| W5-W6 | DONE | Contribution-1 | 接入 `alpha_R` 各向同性重标定（保持低侵入） + NIS 诊断闭环 | 全量对比 `base/fixed/alpha_r`（9序列×2模态×3次） | `w6_metrics.csv`+`w6_summary.md`+对比图 | Gate-W6 严格门禁 PASS |
 | W7-W8 | TODO | Contribution-2 | 接入 `S_k` 方向性塑形 + SPD保护 | 几何退化专项实验 | 退化证据图 | 退化段突跳减少 |
 | W9-W10 | TODO | Contribution-3 | 接入 `alpha_NIS` 与 `zeta_RV`，明确更新接受/拒绝日志 | 双退化实验（视觉差+雷达差） | 完整 DVC 主链 | `alpha_NIS` 不长期饱和 |
 | W11-W12 | TODO | 完整消融矩阵 | 统一实验配置与导出格式 | 全基线+全消融批量跑 | 消融总表+图集 | 每个主张有对应证据 |
@@ -58,6 +58,23 @@
 - 仅当脚本退出码为 `0` 且报告 `pass=true` 才可把对应阶段标记为 `DONE`。
 - 任一门禁失败时，阶段状态必须保持 `TODO/IN_PROGRESS/BLOCKED`，不得写 `DONE`。
 
+## 4.2 W5-W6 严格门禁执行状态（2026-05-19）
+| Gate | 当前状态 | 自动检查脚本 | 必要证据 | 结果 |
+|---|---|---|---|---|
+| Gate-W6 | PASS | `rrxio/python/gate_w6_check.py` | `run_manifest.csv` + `w6_metrics.csv` + `w6_summary.md` + `w6_compare_metrics.png` + `w6_compare_nis.png` + `gate_w6_report.json` | PASS |
+
+本次门禁通过批次说明：
+- 数据根目录：`/home/yyy/datasets/irs_rtvi_datasets_2021`
+- 结果目录：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w6_alpha_r`
+- 运行配置：`features=25`、`bag_duration=60`、`cov_mode in {base,fixed,alpha_r}`、`n_trials=3`
+- 全量覆盖：`9 序列 × 2 模态 × 3 次重复 × 3 模式 = 162 runs`（`SUCCESS=162`）
+
+Gate-W6 关键指标（alpha_r vs base）：
+- NIS 超限率：`5.7756% -> 2.2623%`（相对下降 `60.83%`，绝对下降 `3.513pp`）
+- ATE 中位数：`0.113182 -> 0.101191`（未恶化，改善 `10.59%`）
+- RPE 中位数：`0.074655 -> 0.074027`（未恶化，改善 `0.84%`）
+- 运行时中位数：`10.111s -> 10.063s`（增量 `-0.48%`）
+
 ## 5. 目录与命名规范（统一结果资产）
 建议根目录：`<dataset_root>/results/dvc_rrxio_publish/`
 
@@ -81,6 +98,8 @@ results/dvc_rrxio_publish/
 - 诊断文件：`dvc_diag.csv`
 - W3-W4 最小必需列：
   `timestamp,cond,inlier_ratio,trace_R_used,minEig_R_used,use_radar_update,radar_scan_callback_count,row_id`
+- W5-W6 追加列：
+  `cov_mode,d_r,alpha_r,n_targets,n_inliers,nis_vel,nis_valid,nis_exceed_95,radar_update_committed`
 - 可选列：
   `runtime_reve_ms,runtime_backend_ms`
 

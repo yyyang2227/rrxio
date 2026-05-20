@@ -41,7 +41,8 @@ def _append_manifest_row(manifest_csv, row):
     header = [
         "run_id", "date", "week", "stage", "dataset", "modality", "launch_file", "config_info", "camera_config",
         "bag_start", "bag_duration", "timeshift_cam_imu", "topic_radar_trigger", "topic_radar_scan", "feature_num",
-        "git_rev_root", "git_rev_reve", "status", "owner", "note", "runtime_s", "export_directory", "diag_file"
+        "git_rev_root", "git_rev_reve", "cov_mode", "config_tag", "status", "owner", "note", "runtime_s",
+        "export_directory", "diag_file"
     ]
     is_new = not os.path.isfile(manifest_csv)
     with open(manifest_csv, "a", newline="", encoding="utf-8") as f:
@@ -83,9 +84,7 @@ def run_feature(args, n_feature, git_rev_root, git_rev_reve):
         },
     ]
 
-    configs = [
-        {"name": "base", "changes": {}},
-    ]
+    configs = [{"name": "base", "changes": {}}]
 
     datasets = [
         {"name": "mocap_easy", "start_time": 0, "ground_truth_type": evaluate_ground_truth.VICON},
@@ -104,7 +103,7 @@ def run_feature(args, n_feature, git_rev_root, git_rev_reve):
     topic_radar_trigger = "/sensor_platform/radar/trigger"
     topic_radar_scan = "/sensor_platform/radar/scan"
 
-    runs = len(base_configs) * len(configs) * len(datasets)
+    runs = len(base_configs) * len(configs) * len(datasets) * len(args.cov_modes)
     ctr = 0
     start_time = time.time()
 
@@ -114,119 +113,137 @@ def run_feature(args, n_feature, git_rev_root, git_rev_reve):
         for dataset in datasets:
             euroc_name = dataset["name"]
             for config in configs:
-                ctr += 1
-                print("############################################################")
-                rem_min = (runs - ctr) * (time.time() - start_time) / max(1, ctr) / 60.0
-                print("%s: Progress %d / %d remaining time %0.2fmin" % (str(n_feature), ctr, runs, rem_min))
-                print("############################################################")
+                for cov_mode in args.cov_modes:
+                    ctr += 1
+                    print("############################################################")
+                    rem_min = (runs - ctr) * (time.time() - start_time) / max(1, ctr) / 60.0
+                    print("%s: Progress %d / %d remaining time %0.2fmin" % (str(n_feature), ctr, runs, rem_min))
+                    print("############################################################")
 
-                config_name = base_config["name"] + "_" + config["name"]
-                export_directory_run = os.path.join(
-                    result_base_directory,
-                    base_config["modality"],
-                    config_name,
-                    "nuc_" + config_name + "_" + euroc_name,
-                )
-                _ensure_dir(export_directory_run)
-
-                src_config = os.path.join(rospack.get_path("rrxio"), "launch", "configs", base_config["config"])
-                dst_config = os.path.join(export_directory_run, config_name + ".info")
-                with open(src_config, "r", encoding="utf-8") as f:
-                    config_str = "".join(f.readlines())
-                for old, new in config["changes"].items():
-                    config_str = config_str.replace(old, new)
-                with open(dst_config, "w", encoding="utf-8") as f:
-                    f.write(config_str)
-
-                # DVC diagnostic outputs by run
-                diag_output_dir = os.path.join(args.results_root, "dvc_w4_diag")
-                _ensure_dir(diag_output_dir)
-
-                for k in range(args.n_trials):
-                    run_id = "%s_%s_%s_%s_t%d" % (
-                        dt.datetime.now().strftime("%Y%m%d_%H%M%S"),
-                        str(n_feature),
+                    config_tag = config["name"] + "_" + cov_mode
+                    config_name = base_config["name"] + "_" + config_tag
+                    export_directory_run = os.path.join(
+                        result_base_directory,
                         base_config["modality"],
-                        euroc_name,
-                        k,
+                        config_name,
+                        "nuc_" + config_name + "_" + euroc_name,
                     )
+                    _ensure_dir(export_directory_run)
 
-                    cmd = (
-                        "roslaunch rrxio {launch_file} "
-                        "bag_start:={bag_start} bag_duration:={bag_duration} "
-                        "{default_params} "
-                        "rosbag:={rosbag} ground_truth_csv:={gt_csv} ground_truth_type:={gt_type} "
-                        "export_directory:={export_dir} config:={config_file} rosbag_dir:={rosbag_dir} "
-                        "camera_config:={camera_config} topic_cam:={topic_cam} timeshift_cam_imu:={timeshift} "
-                        "topic_radar_trigger:={topic_radar_trigger} topic_radar_scan:={topic_radar_scan} "
-                        "dvc_diag_enabled:=true dvc_diag_output_dir:={diag_output_dir} dvc_run_id:={run_id} "
-                        "id:={idv} {n_features}"
-                    ).format(
-                        launch_file=base_config["launch_file"],
-                        bag_start=dataset["start_time"],
-                        bag_duration=args.bag_duration,
-                        default_params=default_params,
-                        rosbag=euroc_name,
-                        gt_csv=euroc_name + "_gt.csv",
-                        gt_type=dataset["ground_truth_type"],
-                        export_dir=export_directory_run,
-                        config_file=dst_config,
-                        rosbag_dir=args.rosbag_dir,
-                        camera_config=base_config["camera_config"],
-                        topic_cam=base_config["topic_cam"],
-                        timeshift=base_config["timeshift_cam_imu"],
-                        topic_radar_trigger=topic_radar_trigger,
-                        topic_radar_scan=topic_radar_scan,
-                        diag_output_dir=diag_output_dir,
-                        run_id=run_id,
-                        idv=str(n_feature),
-                        n_features=n_rovio_features,
-                    )
+                    src_config = os.path.join(rospack.get_path("rrxio"), "launch", "configs", base_config["config"])
+                    dst_config = os.path.join(export_directory_run, config_name + ".info")
+                    with open(src_config, "r", encoding="utf-8") as f:
+                        config_str = "".join(f.readlines())
+                    for old, new in config["changes"].items():
+                        config_str = config_str.replace(old, new)
+                    with open(dst_config, "w", encoding="utf-8") as f:
+                        f.write(config_str)
 
-                    print(cmd)
-                    t0 = time.time()
-                    rc = os.system(cmd + (" >/dev/null 2>&1" if args.suppress_console_output else ""))
-                    runtime_s = time.time() - t0
+                    # DVC diagnostic outputs by run
+                    diag_output_dir = os.path.join(args.results_root, "dvc_w6_diag")
+                    _ensure_dir(diag_output_dir)
 
-                    status = "SUCCESS" if rc == 0 else "FAILED"
-                    diag_file = os.path.join(diag_output_dir, "dvc_diag_" + run_id + ".csv")
-                    _append_manifest_row(
-                        manifest_csv,
-                        {
-                            "run_id": run_id,
-                            "date": dt.datetime.now().strftime("%Y-%m-%d"),
-                            "week": args.week,
-                            "stage": "baseline",
-                            "dataset": euroc_name,
-                            "modality": base_config["modality"],
-                            "launch_file": base_config["launch_file"],
-                            "config_info": dst_config,
-                            "camera_config": base_config["camera_config"],
-                            "bag_start": dataset["start_time"],
-                            "bag_duration": args.bag_duration,
-                            "timeshift_cam_imu": base_config["timeshift_cam_imu"],
-                            "topic_radar_trigger": topic_radar_trigger,
-                            "topic_radar_scan": topic_radar_scan,
-                            "feature_num": n_feature,
-                            "git_rev_root": git_rev_root,
-                            "git_rev_reve": git_rev_reve,
-                            "status": status,
-                            "owner": args.owner,
-                            "note": "trial_%d" % k,
-                            "runtime_s": "%.6f" % runtime_s,
-                            "export_directory": export_directory_run,
-                            "diag_file": diag_file,
-                        },
-                    )
-
-                    if args.n_trials > 1 and os.path.exists(os.path.join(export_directory_run, "stamped_traj_estimate.txt")):
-                        os.system(
-                            "mv " + os.path.join(export_directory_run, "stamped_traj_estimate.txt") + " "
-                            + os.path.join(export_directory_run, "stamped_traj_estimate_%s.txt" % run_id)
+                    for k in range(args.n_trials):
+                        run_id = "%s_%s_%s_%s_%s_t%d" % (
+                            dt.datetime.now().strftime("%Y%m%d_%H%M%S"),
+                            str(n_feature),
+                            base_config["modality"],
+                            euroc_name,
+                            cov_mode,
+                            k,
                         )
 
-                with open(os.path.join(export_directory_run, "eval_cfg.yaml"), "w", encoding="utf-8") as config_file_eval:
-                    config_file_eval.write("align_type: posyaw\nalign_num_frames: -1")
+                        cmd = (
+                            "roslaunch rrxio {launch_file} "
+                            "bag_start:={bag_start} bag_duration:={bag_duration} "
+                            "{default_params} "
+                            "rosbag:={rosbag} ground_truth_csv:={gt_csv} ground_truth_type:={gt_type} "
+                            "export_directory:={export_dir} config:={config_file} rosbag_dir:={rosbag_dir} "
+                            "camera_config:={camera_config} topic_cam:={topic_cam} timeshift_cam_imu:={timeshift} "
+                            "topic_radar_trigger:={topic_radar_trigger} topic_radar_scan:={topic_radar_scan} "
+                            "dvc_diag_enabled:=true dvc_diag_output_dir:={diag_output_dir} dvc_run_id:={run_id} "
+                            "dvc_cov_mode:={cov_mode} dvc_fixed_scale:={fixed_scale} "
+                            "dvc_alpha_r_w_cond:={w_cond} dvc_alpha_r_w_inlier:={w_inlier} dvc_alpha_r_w_sparse:={w_sparse} "
+                            "dvc_alpha_r_n_targets_ref:={n_targets_ref} dvc_alpha_r_k_alpha:={k_alpha} "
+                            "dvc_alpha_r_alpha_r_max:={alpha_r_max} dvc_alpha_r_sigma_min2:={sigma_min2} "
+                            "id:={idv} {n_features}"
+                        ).format(
+                            launch_file=base_config["launch_file"],
+                            bag_start=dataset["start_time"],
+                            bag_duration=args.bag_duration,
+                            default_params=default_params,
+                            rosbag=euroc_name,
+                            gt_csv=euroc_name + "_gt.csv",
+                            gt_type=dataset["ground_truth_type"],
+                            export_dir=export_directory_run,
+                            config_file=dst_config,
+                            rosbag_dir=args.rosbag_dir,
+                            camera_config=base_config["camera_config"],
+                            topic_cam=base_config["topic_cam"],
+                            timeshift=base_config["timeshift_cam_imu"],
+                            topic_radar_trigger=topic_radar_trigger,
+                            topic_radar_scan=topic_radar_scan,
+                            diag_output_dir=diag_output_dir,
+                            run_id=run_id,
+                            cov_mode=cov_mode,
+                            fixed_scale=args.dvc_fixed_scale,
+                            w_cond=args.dvc_alpha_r_w_cond,
+                            w_inlier=args.dvc_alpha_r_w_inlier,
+                            w_sparse=args.dvc_alpha_r_w_sparse,
+                            n_targets_ref=args.dvc_alpha_r_n_targets_ref,
+                            k_alpha=args.dvc_alpha_r_k_alpha,
+                            alpha_r_max=args.dvc_alpha_r_alpha_r_max,
+                            sigma_min2=args.dvc_alpha_r_sigma_min2,
+                            idv=str(n_feature),
+                            n_features=n_rovio_features,
+                        )
+
+                        print(cmd)
+                        t0 = time.time()
+                        rc = os.system(cmd + (" >/dev/null 2>&1" if args.suppress_console_output else ""))
+                        runtime_s = time.time() - t0
+
+                        status = "SUCCESS" if rc == 0 else "FAILED"
+                        diag_file = os.path.join(diag_output_dir, "dvc_diag_" + run_id + ".csv")
+                        _append_manifest_row(
+                            manifest_csv,
+                            {
+                                "run_id": run_id,
+                                "date": dt.datetime.now().strftime("%Y-%m-%d"),
+                                "week": args.week,
+                                "stage": args.stage,
+                                "dataset": euroc_name,
+                                "modality": base_config["modality"],
+                                "launch_file": base_config["launch_file"],
+                                "config_info": dst_config,
+                                "camera_config": base_config["camera_config"],
+                                "bag_start": dataset["start_time"],
+                                "bag_duration": args.bag_duration,
+                                "timeshift_cam_imu": base_config["timeshift_cam_imu"],
+                                "topic_radar_trigger": topic_radar_trigger,
+                                "topic_radar_scan": topic_radar_scan,
+                                "feature_num": n_feature,
+                                "git_rev_root": git_rev_root,
+                                "git_rev_reve": git_rev_reve,
+                                "cov_mode": cov_mode,
+                                "config_tag": config_tag,
+                                "status": status,
+                                "owner": args.owner,
+                                "note": "trial_%d" % k,
+                                "runtime_s": "%.6f" % runtime_s,
+                                "export_directory": export_directory_run,
+                                "diag_file": diag_file,
+                            },
+                        )
+
+                        if args.n_trials > 1 and os.path.exists(os.path.join(export_directory_run, "stamped_traj_estimate.txt")):
+                            os.system(
+                                "mv " + os.path.join(export_directory_run, "stamped_traj_estimate.txt") + " "
+                                + os.path.join(export_directory_run, "stamped_traj_estimate_%s.txt" % run_id)
+                            )
+
+                    with open(os.path.join(export_directory_run, "eval_cfg.yaml"), "w", encoding="utf-8") as config_file_eval:
+                        config_file_eval.write("align_type: posyaw\nalign_num_frames: -1")
 
     print(str(n_feature) + ": Starting evaluation...")
 
@@ -245,7 +262,8 @@ def run_feature(args, n_feature, git_rev_root, git_rev_reve):
     algos = []
     for base_config in base_configs:
         for config in configs:
-            algos.append(base_config["name"] + "_" + config["name"])
+            for cov_mode in args.cov_modes:
+                algos.append(base_config["name"] + "_" + config["name"] + "_" + cov_mode)
 
     for algo in algos:
         s += ws + algo + ":\n"
@@ -281,6 +299,16 @@ def main():
     parser.add_argument("--owner", default="unassigned", help="Owner tag for manifest")
     parser.add_argument("--suppress_console_output", action="store_true", help="Suppress roslaunch/analyze console output")
     parser.add_argument("--features", default="25,15,10", help="Comma-separated feature counts")
+    parser.add_argument("--stage", default="baseline", help="Stage tag for manifest rows")
+    parser.add_argument("--cov_modes", default="base", help="Comma-separated covariance modes: base,fixed,alpha_r")
+    parser.add_argument("--dvc_fixed_scale", type=float, default=2.0)
+    parser.add_argument("--dvc_alpha_r_w_cond", type=float, default=0.7)
+    parser.add_argument("--dvc_alpha_r_w_inlier", type=float, default=1.0)
+    parser.add_argument("--dvc_alpha_r_w_sparse", type=float, default=0.6)
+    parser.add_argument("--dvc_alpha_r_n_targets_ref", type=float, default=40.0)
+    parser.add_argument("--dvc_alpha_r_k_alpha", type=float, default=1.5)
+    parser.add_argument("--dvc_alpha_r_alpha_r_max", type=float, default=5.0)
+    parser.add_argument("--dvc_alpha_r_sigma_min2", type=float, default=1.0e-4)
     args = parser.parse_args()
 
     args.rosbag_dir = args.rosbag_dir if args.rosbag_dir.endswith("/") else args.rosbag_dir + "/"
@@ -292,6 +320,12 @@ def main():
     features = [f.strip() for f in args.features.split(",") if f.strip()]
     if not features:
         raise RuntimeError("No feature count provided.")
+    args.cov_modes = [m.strip().lower() for m in args.cov_modes.split(",") if m.strip()]
+    if not args.cov_modes:
+        raise RuntimeError("No covariance mode provided.")
+    for mode in args.cov_modes:
+        if mode not in ("base", "fixed", "alpha_r"):
+            raise RuntimeError("Unsupported cov mode: %s" % mode)
 
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     git_rev_root = _git_rev(repo_root)

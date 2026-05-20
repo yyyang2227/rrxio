@@ -172,6 +172,9 @@
 | launch/rosparam | `dvc_diag_enabled` | `dvc_diag_enabled_` | 启用/关闭 W3-W4 诊断写出 |
 | launch/rosparam | `dvc_diag_output_dir` | `dvc_diag_output_dir_` | 每次 run 的诊断 CSV 输出目录 |
 | launch/rosparam | `dvc_run_id` | `dvc_run_id_` | 诊断文件名绑定的运行批次 ID |
+| launch/rosparam | `dvc_rrxio/cov_mode` | `radar_cov_recalib_cfg_.cov_mode` | 雷达协方差模式切换（`base/fixed/alpha_r`） |
+| launch/rosparam | `dvc_rrxio/fixed_scale` | `radar_cov_recalib_cfg_.fixed_scale` | `fixed` 模式膨胀倍数 |
+| launch/rosparam | `dvc_rrxio/alpha_r/*` | `radar_cov_recalib_cfg_.*` | `alpha_r` 退化评分权重、上限、数值保护 |
 | yaml | `min_dist` 等 | `config_.*` | 雷达筛选/RANSAC/ODR 行为 |
 | yaml | `l_b_r_*`,`q_b_r_*` | `T_b_r_` | 雷达到体坐标速度变换 |
 | info | `Common.depthType` | `depthTypeInt_` | 深度参数化类型 |
@@ -184,8 +187,10 @@
 
 1. 雷达体速度融合链接入（REVE + VelocityUpdate 协方差动态注入）。
 2. 速度更新门限参数暴露（`MahalanobisThVel`）。
-3. 调度触发策略增量（`ROVIO_UPDATE_SOURCE`）。
-4. 运行 I/O 与调试链增强（雷达话题、tracker 图像、离线评估脚本链）。
+3. W5-W6 新增低侵入协方差重标定（`base/fixed/alpha_r` 三模式）与 SPD 数值保护。
+4. W5-W6 新增 NIS 诊断闭环（`nis_vel/nis_valid/nis_exceed_95/radar_update_committed`）。
+5. 调度触发策略增量（`ROVIO_UPDATE_SOURCE`）。
+6. 运行 I/O 与调试链增强（雷达话题、tracker 图像、离线评估脚本链）。
 
 ---
 
@@ -195,6 +200,7 @@
 2. 雷达速度闭环：验证 `estimate -> setMeasurementNoise -> addUpdateMeas<2>` 成对出现。
 3. 时序边界：验证 `timeshift_cam_imu`、`bag_start`、`bag_duration` 生效，并确认评估入口不再接受 `bag_dur`。
 4. 失败路径：雷达估计失败时显式日志暴露，不产生伪成功更新。
+5. W5-W6 严格门禁：验证 `base/fixed/alpha_r` 全量矩阵（`9×2×3×3=162`）和 Gate-W6 指标阈值。
 
 ---
 
@@ -209,6 +215,15 @@
 - `Gate-W2`: `PASS`（`baseline_v1/gate_w2_report.json`）
 - `Gate-W4`: `PASS`（`baseline_v1/gate_w4_report.json`）
 - 结果：W1-W2 与 W3-W4 已满足门禁，可标记 `DONE`
+
+5. W5-W6 门禁状态（2026-05-19）：
+- `Gate-W6`: `PASS`（`dvc_w6_alpha_r/gate_w6_report.json`，退出码 `0`）
+- 全量覆盖：`162/162 SUCCESS`（`run_manifest.csv`）
+- 关键收益（`alpha_r` vs `base`）：
+  - NIS 超限率：`5.7756% -> 2.2623%`（相对下降 `60.83%`，绝对下降 `3.513pp`）
+  - ATE/RPE 中位数：未恶化
+  - 运行时中位数：`-0.48%`（未超预算）
+- 结果：W5-W6 已满足严格门禁，可标记 `DONE`
 
 ---
 
@@ -251,3 +266,12 @@
     - `Gate-W2`: PASS
     - `Gate-W4`: PASS
     - `run_manifest` 成功条目：54（18组，每组3次）
+- 2026-05-19（W5-W6 严格门禁通过）：
+  - `rrxio/include/rrxio/RRxIONode.hpp`：接入 `dvc_rrxio.cov_mode` 三模式协方差重标定，新增 SPD 保护与 W6 诊断字段写出。
+  - `rrxio/include/rrxio/VelocityUpdate.hpp`：新增最近一次速度更新 NIS/离群诊断导出。
+  - `rrxio/launch/rrxio_evaluate_rosbag.launch`：新增 `dvc_rrxio` W6 参数透传。
+  - `rrxio/python/evaluate_iros_datasets.py`：支持 `cov_mode/config_tag` 运行清单与三模式批量执行。
+  - 新增 `rrxio/python/summarize_w6_results.py` 与 `rrxio/python/gate_w6_check.py`，并产出 `w6_compare_metrics.png`、`w6_compare_nis.png`。
+  - 真实数据门禁结果（`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w6_alpha_r`）：
+    - `Gate-W6`: PASS
+    - `run_manifest` 成功条目：162（54组，每组3次）

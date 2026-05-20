@@ -1557,3 +1557,16 @@ $$
 $$
 
 该路线能够有效避开 RadVIO 的直接冲突，同时保留 RRxIO 的实时性和工程简洁性，适合作为面向仪器仪表、智能感知与多源融合导航方向的完整研究方案。
+
+---
+
+## 附录A：当前工程实施状态快照（2026-05-19）
+
+- W1-W4：已完成并通过门禁（`Gate-W2/Gate-W4 = PASS`）。
+- W5-W6（Contribution-1，`alpha_R` 各向同性重标定）：已完成并通过严格门禁（`Gate-W6 = PASS`）。
+- W5-W6 全量实验规模：`9 序列 × 2 模态 × 3 次重复 × 3 模式 = 162 runs`，`SUCCESS=162`。
+- W5-W6 关键结论（`alpha_r` 对比 `base`）：
+  - NIS 超限率：`5.7756% -> 2.2623%`（相对下降 `60.83%`，绝对下降 `3.513pp`）
+  - ATE/RPE 中位数：未恶化
+  - 运行时中位数：未超预算（`-0.48%`）
+- 证据目录：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w6_alpha_r`

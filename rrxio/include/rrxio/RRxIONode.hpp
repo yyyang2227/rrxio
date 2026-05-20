@@ -30,6 +30,7 @@
 #ifndef ROVIO_ROVIONODE_HPP_
 #define ROVIO_ROVIONODE_HPP_
 
+#include <algorithm>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -37,6 +38,8 @@
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
+#include <cctype>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <cerrno>
@@ -152,6 +155,23 @@ public:
   std::shared_ptr<reve::RadarBodyVelocityEstimator> radar_body_estimator_;
   uint64_t radar_scan_callback_count_ = 0;
 
+  struct RadarCovRecalibConfig
+  {
+    std::string cov_mode = "base";
+    double fixed_scale   = 2.0;
+
+    double w_cond      = 0.7;
+    double w_inlier    = 1.0;
+    double w_sparse    = 0.6;
+    double n_targets_ref = 40.0;
+    double k_alpha       = 1.5;
+    double alpha_r_max   = 5.0;
+    double sigma_min2    = 1.0e-4;
+    double max_r_cond_ref = 1000.0;
+  };
+  RadarCovRecalibConfig radar_cov_recalib_cfg_;
+  static constexpr double kChi2_3_95_ = 7.8147279;
+
   // DVC diagnostic logging (W3-W4 minimal closure)
   bool dvc_diag_enabled_ = false;
   std::string dvc_diag_output_dir_;
@@ -239,7 +259,7 @@ public:
 #endif
     mpImgUpdate_  = &std::get<0>(mpFilter_->mUpdates_);
     mpPoseUpdate_ = &std::get<1>(mpFilter_->mUpdates_);
-    //    mpVelocityUpdate_                  = &std::get<2>(mpFilter_->mUpdates_);
+    mpVelocityUpdate_ = &std::get<2>(mpFilter_->mUpdates_);
     forceOdometryPublishing_           = false;
     forcePoseWithCovariancePublishing_ = false;
     forceTransformPublishing_          = false;
@@ -270,6 +290,53 @@ public:
     nh_private_.param("dvc_diag_enabled", dvc_diag_enabled_, dvc_diag_enabled_);
     nh_private_.param("dvc_diag_output_dir", dvc_diag_output_dir_, dvc_diag_output_dir_);
     nh_private_.param("dvc_run_id", dvc_run_id_, dvc_run_id_);
+    nh_private_.param("dvc_rrxio/cov_mode", radar_cov_recalib_cfg_.cov_mode, radar_cov_recalib_cfg_.cov_mode);
+    nh_private_.param("dvc_rrxio/fixed_scale", radar_cov_recalib_cfg_.fixed_scale, radar_cov_recalib_cfg_.fixed_scale);
+    nh_private_.param("dvc_rrxio/alpha_r/w_cond", radar_cov_recalib_cfg_.w_cond, radar_cov_recalib_cfg_.w_cond);
+    nh_private_.param("dvc_rrxio/alpha_r/w_inlier", radar_cov_recalib_cfg_.w_inlier, radar_cov_recalib_cfg_.w_inlier);
+    nh_private_.param("dvc_rrxio/alpha_r/w_sparse", radar_cov_recalib_cfg_.w_sparse, radar_cov_recalib_cfg_.w_sparse);
+    nh_private_.param(
+        "dvc_rrxio/alpha_r/n_targets_ref", radar_cov_recalib_cfg_.n_targets_ref, radar_cov_recalib_cfg_.n_targets_ref);
+    nh_private_.param("dvc_rrxio/alpha_r/k_alpha", radar_cov_recalib_cfg_.k_alpha, radar_cov_recalib_cfg_.k_alpha);
+    nh_private_.param(
+        "dvc_rrxio/alpha_r/alpha_r_max", radar_cov_recalib_cfg_.alpha_r_max, radar_cov_recalib_cfg_.alpha_r_max);
+    nh_private_.param("dvc_rrxio/alpha_r/sigma_min2", radar_cov_recalib_cfg_.sigma_min2, radar_cov_recalib_cfg_.sigma_min2);
+    nh_private_.param("max_r_cond", radar_cov_recalib_cfg_.max_r_cond_ref, radar_cov_recalib_cfg_.max_r_cond_ref);
+
+    std::transform(radar_cov_recalib_cfg_.cov_mode.begin(),
+                   radar_cov_recalib_cfg_.cov_mode.end(),
+                   radar_cov_recalib_cfg_.cov_mode.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    if (radar_cov_recalib_cfg_.cov_mode != "base" && radar_cov_recalib_cfg_.cov_mode != "fixed" &&
+        radar_cov_recalib_cfg_.cov_mode != "alpha_r")
+    {
+      throw std::runtime_error("Invalid dvc_rrxio/cov_mode. Supported modes: base, fixed, alpha_r.");
+    }
+    if (radar_cov_recalib_cfg_.fixed_scale <= 0.0)
+    {
+      throw std::runtime_error("dvc_rrxio/fixed_scale must be > 0.");
+    }
+    if (radar_cov_recalib_cfg_.sigma_min2 <= 0.0)
+    {
+      throw std::runtime_error("dvc_rrxio/alpha_r/sigma_min2 must be > 0.");
+    }
+    if (radar_cov_recalib_cfg_.n_targets_ref <= 0.0)
+    {
+      throw std::runtime_error("dvc_rrxio/alpha_r/n_targets_ref must be > 0.");
+    }
+    if (radar_cov_recalib_cfg_.k_alpha < 0.0)
+    {
+      throw std::runtime_error("dvc_rrxio/alpha_r/k_alpha must be >= 0.");
+    }
+    if (radar_cov_recalib_cfg_.alpha_r_max < 1.0)
+    {
+      throw std::runtime_error("dvc_rrxio/alpha_r/alpha_r_max must be >= 1.");
+    }
+    if (radar_cov_recalib_cfg_.max_r_cond_ref <= 1.0)
+    {
+      throw std::runtime_error("max_r_cond must be > 1 for alpha_R condition-number normalization.");
+    }
     initDvcDiagLogging();
 
     subImu_                 = nh_.subscribe(topic_imu, 2000, &RovioNode::imuCallback, this);
@@ -480,6 +547,82 @@ public:
     return true;
   }
 
+  static double clampScalar(const double value, const double low, const double high)
+  {
+    return std::max(low, std::min(high, value));
+  }
+
+  bool regularizeCovariance(Eigen::Matrix3d& cov, const double min_eigenvalue_floor) const
+  {
+    if (!cov.allFinite())
+      return false;
+    cov = 0.5 * (cov + cov.transpose());
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eig(cov);
+    if (eig.info() != Eigen::Success)
+      return false;
+
+    Eigen::Vector3d evals = eig.eigenvalues();
+    evals(0)              = std::max(evals(0), min_eigenvalue_floor);
+    evals(1)              = std::max(evals(1), min_eigenvalue_floor);
+    evals(2)              = std::max(evals(2), min_eigenvalue_floor);
+    cov                   = eig.eigenvectors() * evals.asDiagonal() * eig.eigenvectors().transpose();
+    cov                   = 0.5 * (cov + cov.transpose());
+    return cov.allFinite();
+  }
+
+  bool computeRadarCovariance(const Eigen::Matrix3d& cov_reve,
+                              const reve::RadarEstimationDiag& diag,
+                              Eigen::Matrix3d& cov_used,
+                              double& d_r,
+                              double& alpha_r) const
+  {
+    cov_used = cov_reve;
+    d_r      = std::numeric_limits<double>::quiet_NaN();
+    alpha_r  = std::numeric_limits<double>::quiet_NaN();
+
+    if (!cov_reve.allFinite())
+      return false;
+
+    const std::string& mode = radar_cov_recalib_cfg_.cov_mode;
+    const Eigen::Matrix3d I = Eigen::Matrix3d::Identity();
+
+    if (mode == "base")
+    {
+      alpha_r = 1.0;
+      return regularizeCovariance(cov_used, radar_cov_recalib_cfg_.sigma_min2);
+    }
+
+    if (mode == "fixed")
+    {
+      alpha_r  = radar_cov_recalib_cfg_.fixed_scale;
+      cov_used = alpha_r * cov_reve + radar_cov_recalib_cfg_.sigma_min2 * I;
+      return regularizeCovariance(cov_used, radar_cov_recalib_cfg_.sigma_min2);
+    }
+
+    if (mode != "alpha_r")
+      return false;
+
+    const double denom = std::log10(radar_cov_recalib_cfg_.max_r_cond_ref);
+    if (!(std::isfinite(denom) && denom > 0.0))
+      return false;
+
+    const double cond         = std::isfinite(diag.cond) ? std::fabs(diag.cond) : radar_cov_recalib_cfg_.max_r_cond_ref;
+    const double inlier_ratio = std::isfinite(diag.inlier_ratio) ? diag.inlier_ratio : 0.0;
+    const double n_targets    = static_cast<double>(diag.n_targets);
+
+    const double f_cond = clampScalar(std::log10(std::max(cond, 1.0)) / denom, 0.0, 1.0);
+    const double f_inlier = clampScalar(1.0 - inlier_ratio, 0.0, 1.0);
+    const double f_sparse = clampScalar(
+        (radar_cov_recalib_cfg_.n_targets_ref - n_targets) / radar_cov_recalib_cfg_.n_targets_ref, 0.0, 1.0);
+
+    d_r = radar_cov_recalib_cfg_.w_cond * f_cond + radar_cov_recalib_cfg_.w_inlier * f_inlier +
+          radar_cov_recalib_cfg_.w_sparse * f_sparse;
+    alpha_r = clampScalar(1.0 + radar_cov_recalib_cfg_.k_alpha * d_r, 1.0, radar_cov_recalib_cfg_.alpha_r_max);
+
+    cov_used = alpha_r * cov_reve + radar_cov_recalib_cfg_.sigma_min2 * I;
+    return regularizeCovariance(cov_used, radar_cov_recalib_cfg_.sigma_min2);
+  }
+
   void initDvcDiagLogging()
   {
     if (!dvc_diag_enabled_)
@@ -516,7 +659,8 @@ public:
     }
 
     dvc_diag_stream_ << "timestamp,cond,inlier_ratio,trace_R_used,minEig_R_used,use_radar_update,runtime_reve_ms,"
-                        "runtime_backend_ms,radar_scan_callback_count,row_id\n";
+                        "runtime_backend_ms,radar_scan_callback_count,row_id,cov_mode,d_r,alpha_r,n_targets,n_inliers,"
+                        "nis_vel,nis_valid,nis_exceed_95,radar_update_committed\n";
     dvc_diag_stream_.flush();
     ROS_INFO_STREAM("[dvc_diag] Logging enabled: " << diag_file);
   }
@@ -526,7 +670,14 @@ public:
                        const Eigen::Matrix3d* cov_v_b_r,
                        const int use_radar_update,
                        const double runtime_reve_ms,
-                       const double runtime_backend_ms)
+                       const double runtime_backend_ms,
+                       const std::string& cov_mode,
+                       const double d_r,
+                       const double alpha_r,
+                       const double nis_vel,
+                       const int nis_valid,
+                       const int nis_exceed_95,
+                       const int radar_update_committed)
   {
     if (!dvc_diag_enabled_ || !dvc_diag_stream_.good())
       return;
@@ -547,7 +698,10 @@ public:
 
     dvc_diag_stream_ << std::fixed << std::setprecision(9) << timestamp << "," << diag.cond << "," << diag.inlier_ratio
                      << "," << trace_R << "," << minEig << "," << use_radar_update << "," << runtime_reve_ms << ","
-                     << runtime_backend_ms << "," << radar_scan_callback_count_ << "," << dvc_diag_rows_++ << "\n";
+                     << runtime_backend_ms << "," << radar_scan_callback_count_ << "," << dvc_diag_rows_++ << ","
+                     << cov_mode << "," << d_r << "," << alpha_r << "," << diag.n_targets << "," << diag.n_inliers
+                     << "," << nis_vel << "," << nis_valid << "," << nis_exceed_95 << "," << radar_update_committed
+                     << "\n";
     dvc_diag_stream_.flush();
   }
 
@@ -907,20 +1061,47 @@ public:
   void processRadarScan(const Eigen::Vector3d& w)
   {
     Eigen::Vector3d v_b_r;
-    Eigen::Matrix3d cov_v_b_r;
+    Eigen::Matrix3d cov_v_b_r_reve;
+    Eigen::Matrix3d cov_v_b_r_used;
     reve::RadarEstimationDiag radar_diag;
     double runtime_reve_ms    = std::numeric_limits<double>::quiet_NaN();
     double runtime_backend_ms = std::numeric_limits<double>::quiet_NaN();
+    double d_r                = std::numeric_limits<double>::quiet_NaN();
+    double alpha_r            = std::numeric_limits<double>::quiet_NaN();
+    double nis_vel            = std::numeric_limits<double>::quiet_NaN();
+    int nis_valid             = 0;
+    int nis_exceed_95         = 0;
+    int radar_update_committed = 0;
 
     const double t_reve_start = ros::WallTime::now().toSec();
 
-    if (radar_body_estimator_->estimate(most_recent_radar_scan_, w, v_b_r, cov_v_b_r, &radar_diag))
+    if (radar_body_estimator_->estimate(most_recent_radar_scan_, w, v_b_r, cov_v_b_r_reve, &radar_diag))
     {
       runtime_reve_ms = (ros::WallTime::now().toSec() - t_reve_start) * 1000.0;
       if (init_state_.isInitialized())
       {
+        if (!computeRadarCovariance(cov_v_b_r_reve, radar_diag, cov_v_b_r_used, d_r, alpha_r))
+        {
+          ROS_WARN_STREAM("[radarScanCallback] Invalid radar covariance after recalibration. Skip radar update.");
+          writeDvcDiagRow(most_recent_radar_scan_.header.stamp.toSec(),
+                          radar_diag,
+                          &cov_v_b_r_reve,
+                          0,
+                          runtime_reve_ms,
+                          runtime_backend_ms,
+                          radar_cov_recalib_cfg_.cov_mode,
+                          d_r,
+                          alpha_r,
+                          nis_vel,
+                          nis_valid,
+                          nis_exceed_95,
+                          radar_update_committed);
+          most_recent_radar_scan_.header.stamp = ros::TIME_MIN;
+          return;
+        }
+
         const double t_backend_start = ros::WallTime::now().toSec();
-        std::get<2>(mpFilter_->mUpdates_).setMeasurementNoise(cov_v_b_r);
+        mpVelocityUpdate_->setMeasurementNoise(cov_v_b_r_used);
 
         velocityUpdateMeas_.vel() = v_b_r;
 
@@ -929,22 +1110,62 @@ public:
                                              most_recent_radar_scan_.header.stamp.toSec() + 10.0e-3);
         updateAndPublish();
         runtime_backend_ms = (ros::WallTime::now().toSec() - t_backend_start) * 1000.0;
+
+        const VelocityUpdateDiag& vel_diag = mpVelocityUpdate_->getLastDiag();
+        nis_vel = vel_diag.mahalanobis_distance;
+        nis_valid = std::isfinite(nis_vel) ? 1 : 0;
+        radar_update_committed = (nis_valid == 1 && !vel_diag.is_outlier) ? 1 : 0;
+        nis_exceed_95          = (nis_valid == 1 && std::isfinite(nis_vel) && nis_vel > kChi2_3_95_) ? 1 : 0;
+
         writeDvcDiagRow(most_recent_radar_scan_.header.stamp.toSec(),
                         radar_diag,
-                        &cov_v_b_r,
+                        &cov_v_b_r_used,
                         1,
                         runtime_reve_ms,
-                        runtime_backend_ms);
+                        runtime_backend_ms,
+                        radar_cov_recalib_cfg_.cov_mode,
+                        d_r,
+                        alpha_r,
+                        nis_vel,
+                        nis_valid,
+                        nis_exceed_95,
+                        radar_update_committed);
       }
       else
       {
         // estimation succeeded but update not used because filter not initialized yet
-        writeDvcDiagRow(most_recent_radar_scan_.header.stamp.toSec(),
-                        radar_diag,
-                        &cov_v_b_r,
-                        0,
-                        runtime_reve_ms,
-                        runtime_backend_ms);
+        if (computeRadarCovariance(cov_v_b_r_reve, radar_diag, cov_v_b_r_used, d_r, alpha_r))
+        {
+          writeDvcDiagRow(most_recent_radar_scan_.header.stamp.toSec(),
+                          radar_diag,
+                          &cov_v_b_r_used,
+                          0,
+                          runtime_reve_ms,
+                          runtime_backend_ms,
+                          radar_cov_recalib_cfg_.cov_mode,
+                          d_r,
+                          alpha_r,
+                          nis_vel,
+                          nis_valid,
+                          nis_exceed_95,
+                          radar_update_committed);
+        }
+        else
+        {
+          writeDvcDiagRow(most_recent_radar_scan_.header.stamp.toSec(),
+                          radar_diag,
+                          &cov_v_b_r_reve,
+                          0,
+                          runtime_reve_ms,
+                          runtime_backend_ms,
+                          radar_cov_recalib_cfg_.cov_mode,
+                          d_r,
+                          alpha_r,
+                          nis_vel,
+                          nis_valid,
+                          nis_exceed_95,
+                          radar_update_committed);
+        }
       }
     }
     else
@@ -956,7 +1177,14 @@ public:
                       nullptr,
                       0,
                       runtime_reve_ms,
-                      runtime_backend_ms);
+                      runtime_backend_ms,
+                      radar_cov_recalib_cfg_.cov_mode,
+                      d_r,
+                      alpha_r,
+                      nis_vel,
+                      nis_valid,
+                      nis_exceed_95,
+                      radar_update_committed);
     }
     most_recent_radar_scan_.header.stamp = ros::TIME_MIN;
   }
