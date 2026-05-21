@@ -38,6 +38,16 @@
     <arg name="dvc_alpha_r_k_alpha" default="1.5"/>
     <arg name="dvc_alpha_r_alpha_r_max" default="5.0"/>
     <arg name="dvc_alpha_r_sigma_min2" default="0.0001"/>
+    <arg name="dvc_scheduler_mode" default="legacy"/>
+    <arg name="dvc_scheduler_max_events" default="2048"/>
+    <arg name="dvc_scheduler_watermark_margin_s" default="0.002"/>
+    <arg name="dvc_scheduler_watermark_max_wait_s" default="0.200"/>
+    <arg name="dvc_scheduler_radar_imu_window_s" default="0.020"/>
+    <arg name="dvc_scheduler_enable_diag" default="False"/>
+    <arg name="dvc_scheduler_diag_output_dir" default=""/>
+    <arg name="dvc_scheduler_backpressure_depth" default="-1"/>
+    <arg name="dvc_scheduler_backpressure_timeout_s" default="5.0"/>
+    <arg name="dvc_scheduler_drain_timeout_s" default="120.0"/>
 
     <node pkg="rrxio" type="rrxio_rosbag_loader_$(arg N)" name="rovio$(arg id)" output="screen" clear_params="True" launch-prefix="bash -c 'sleep 2; $0 $@' ">
         <param name="filter_config" value="$(arg config)"/>
@@ -64,6 +74,16 @@
         <param name="dvc_rrxio/alpha_r/k_alpha" value="$(arg dvc_alpha_r_k_alpha)"/>
         <param name="dvc_rrxio/alpha_r/alpha_r_max" value="$(arg dvc_alpha_r_alpha_r_max)"/>
         <param name="dvc_rrxio/alpha_r/sigma_min2" value="$(arg dvc_alpha_r_sigma_min2)"/>
+        <param name="dvc_rrxio/scheduler/mode" type="str" value="$(arg dvc_scheduler_mode)"/>
+        <param name="dvc_rrxio/scheduler/max_events" value="$(arg dvc_scheduler_max_events)"/>
+        <param name="dvc_rrxio/scheduler/watermark_margin_s" value="$(arg dvc_scheduler_watermark_margin_s)"/>
+        <param name="dvc_rrxio/scheduler/watermark_max_wait_s" value="$(arg dvc_scheduler_watermark_max_wait_s)"/>
+        <param name="dvc_rrxio/scheduler/radar_imu_window_s" value="$(arg dvc_scheduler_radar_imu_window_s)"/>
+        <param name="dvc_rrxio/scheduler/enable_diag" type="bool" value="$(arg dvc_scheduler_enable_diag)"/>
+        <param name="dvc_rrxio/scheduler/diag_output_dir" type="str" value="$(arg dvc_scheduler_diag_output_dir)"/>
+        <param name="scheduler_backpressure_depth" value="$(arg dvc_scheduler_backpressure_depth)"/>
+        <param name="scheduler_backpressure_timeout_s" value="$(arg dvc_scheduler_backpressure_timeout_s)"/>
+        <param name="scheduler_drain_timeout_s" value="$(arg dvc_scheduler_drain_timeout_s)"/>
 
         <rosparam file="$(find rrxio)/launch/configs/default_params_radar_ego_velocity_estimation.yaml" command="load"/>
         <rosparam file="$(arg radar_calib)" command="load"/>

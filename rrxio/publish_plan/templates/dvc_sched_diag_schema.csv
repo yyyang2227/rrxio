@@ -1,0 +1,16 @@
+field,type,unit,description,required
+row_id,uint64,-,monotonic row index per run,true
+event_timestamp,float64,s,sensor event timestamp,true
+event_enqueue_wall_time,float64,s,wall-clock time when event is enqueued/registered,true
+event_process_wall_time,float64,s,wall-clock time when event processing starts,true
+scheduler_mode,string,-,scheduler mode (legacy/event_stage1/event_stage2),true
+event_type,string,-,event type,true
+queue_depth,uint,-,queue depth after pop,true
+event_latency_ms,float64,ms,time from enqueue to processing,true
+watermark_wait_ms,float64,ms,time spent waiting on watermark,true
+drop_total,uint64,-,cumulative dropped event count,true
+drop_type,string,-,most recent dropped type (none when no drop),true
+lock_wait_us,float64,us,lock waiting duration,true
+lock_hold_us,float64,us,lock hold duration,true
+radar_enqueue_to_commit_ms,float64,ms,latency from radar enqueue to committed update,true
+radar_starved,int,-,1 if radar update starved for imu support,true

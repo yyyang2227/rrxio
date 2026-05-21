@@ -34,12 +34,18 @@
 #include <memory>
 #include <mutex>
 #include <queue>
+#include <deque>
+#include <thread>
+#include <atomic>
+#include <condition_variable>
+#include <chrono>
 #include <fstream>
 #include <iomanip>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <cctype>
+#include <map>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <cerrno>
@@ -179,6 +185,89 @@ public:
   std::ofstream dvc_diag_stream_;
   uint64_t dvc_diag_rows_ = 0;
 
+  enum class SchedulerMode
+  {
+    Legacy,
+    EventStage1,
+    EventStage2
+  };
+
+  enum class EventType
+  {
+    Imu,
+    Image0,
+    Image1,
+    GroundtruthPose,
+    GroundtruthOdometry,
+    Velocity,
+    RadarTrigger,
+    RadarScan,
+    Reset,
+    ResetToPose
+  };
+
+  struct SchedulerConfig
+  {
+    std::string mode             = "legacy";
+    int max_events               = 2048;
+    double watermark_margin_s    = 0.002;
+    double watermark_max_wait_s  = 0.200;
+    double radar_imu_window_s    = 0.020;
+    bool enable_diag             = false;
+    bool diag_log_all_events     = false;
+    std::string diag_output_dir;
+  };
+
+  struct EventQueueStats
+  {
+    uint64_t enqueued = 0;
+    uint64_t processed = 0;
+    uint64_t dropped_total = 0;
+    uint64_t watermark_block_count = 0;
+    uint64_t radar_starved_count = 0;
+    std::map<EventType, uint64_t> dropped_by_type;
+  };
+
+  struct SensorEvent
+  {
+    EventType type = EventType::Imu;
+    double timestamp = 0.0;
+    uint64_t seq = 0;
+    double enqueue_wall_time = 0.0;
+
+    sensor_msgs::Imu::ConstPtr imu_msg;
+    sensor_msgs::ImageConstPtr img_msg;
+    geometry_msgs::TransformStamped::ConstPtr gt_msg;
+    nav_msgs::Odometry::ConstPtr gt_odom_msg;
+    geometry_msgs::TwistStamped::ConstPtr vel_msg;
+    std_msgs::HeaderConstPtr trigger_msg;
+    sensor_msgs::PointCloud2ConstPtr radar_scan_msg;
+    V3D reset_WrWM = V3D::Zero();
+    QPD reset_qMW;
+  };
+
+  SchedulerConfig scheduler_cfg_;
+  SchedulerMode scheduler_mode_ = SchedulerMode::Legacy;
+  std::thread estimator_worker_;
+  std::mutex scheduler_mutex_;
+  std::condition_variable scheduler_cv_;
+  std::deque<SensorEvent> event_queue_;
+  std::atomic<bool> worker_running_{ false };
+  std::atomic<bool> worker_processing_{ false };
+  std::thread::id worker_thread_id_;
+  uint64_t event_seq_ = 0;
+  double latest_imu_time_ = -std::numeric_limits<double>::infinity();
+  EventQueueStats event_queue_stats_;
+  std::map<uint64_t, double> watermark_block_start_sec_;
+  std::deque<sensor_msgs::Imu> imu_history_;
+  std::ofstream dvc_sched_diag_stream_;
+  uint64_t dvc_sched_diag_rows_ = 0;
+  std::mutex image_sync_mutex_;
+  double active_radar_enqueue_wall_time_ = std::numeric_limits<double>::quiet_NaN();
+  double last_radar_enqueue_to_commit_ms_ = std::numeric_limits<double>::quiet_NaN();
+  int last_radar_starved_ = 0;
+  std::string last_drop_type_ = "none";
+
   // Nodes, Subscriber, Publishers
   ros::NodeHandle nh_;
   ros::NodeHandle nh_private_;
@@ -287,9 +376,25 @@ public:
     nh_private.param("topic_radar_scan", topic_radar_scan, topic_radar_scan);
     double timeshift_cam_imu = 0.0;
     nh_private.param("timeshift_cam_imu", timeshift_cam_imu, timeshift_cam_imu);
+    timeshift_cam_imu_ = timeshift_cam_imu;
     nh_private_.param("dvc_diag_enabled", dvc_diag_enabled_, dvc_diag_enabled_);
     nh_private_.param("dvc_diag_output_dir", dvc_diag_output_dir_, dvc_diag_output_dir_);
     nh_private_.param("dvc_run_id", dvc_run_id_, dvc_run_id_);
+    nh_private_.param("dvc_rrxio/scheduler/mode", scheduler_cfg_.mode, scheduler_cfg_.mode);
+    nh_private_.param("dvc_rrxio/scheduler/max_events", scheduler_cfg_.max_events, scheduler_cfg_.max_events);
+    nh_private_.param(
+        "dvc_rrxio/scheduler/watermark_margin_s", scheduler_cfg_.watermark_margin_s, scheduler_cfg_.watermark_margin_s);
+    nh_private_.param("dvc_rrxio/scheduler/watermark_max_wait_s",
+                      scheduler_cfg_.watermark_max_wait_s,
+                      scheduler_cfg_.watermark_max_wait_s);
+    nh_private_.param(
+        "dvc_rrxio/scheduler/radar_imu_window_s", scheduler_cfg_.radar_imu_window_s, scheduler_cfg_.radar_imu_window_s);
+    nh_private_.param("dvc_rrxio/scheduler/enable_diag", scheduler_cfg_.enable_diag, scheduler_cfg_.enable_diag);
+    nh_private_.param("dvc_rrxio/scheduler/diag_log_all_events",
+                      scheduler_cfg_.diag_log_all_events,
+                      scheduler_cfg_.diag_log_all_events);
+    nh_private_.param(
+        "dvc_rrxio/scheduler/diag_output_dir", scheduler_cfg_.diag_output_dir, scheduler_cfg_.diag_output_dir);
     nh_private_.param("dvc_rrxio/cov_mode", radar_cov_recalib_cfg_.cov_mode, radar_cov_recalib_cfg_.cov_mode);
     nh_private_.param("dvc_rrxio/fixed_scale", radar_cov_recalib_cfg_.fixed_scale, radar_cov_recalib_cfg_.fixed_scale);
     nh_private_.param("dvc_rrxio/alpha_r/w_cond", radar_cov_recalib_cfg_.w_cond, radar_cov_recalib_cfg_.w_cond);
@@ -307,6 +412,19 @@ public:
                    radar_cov_recalib_cfg_.cov_mode.end(),
                    radar_cov_recalib_cfg_.cov_mode.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::transform(scheduler_cfg_.mode.begin(),
+                   scheduler_cfg_.mode.end(),
+                   scheduler_cfg_.mode.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    if (scheduler_cfg_.mode == "legacy")
+      scheduler_mode_ = SchedulerMode::Legacy;
+    else if (scheduler_cfg_.mode == "event_stage1")
+      scheduler_mode_ = SchedulerMode::EventStage1;
+    else if (scheduler_cfg_.mode == "event_stage2")
+      scheduler_mode_ = SchedulerMode::EventStage2;
+    else
+      throw std::runtime_error("Invalid dvc_rrxio/scheduler/mode. Supported: legacy, event_stage1, event_stage2.");
 
     if (radar_cov_recalib_cfg_.cov_mode != "base" && radar_cov_recalib_cfg_.cov_mode != "fixed" &&
         radar_cov_recalib_cfg_.cov_mode != "alpha_r")
@@ -337,6 +455,14 @@ public:
     {
       throw std::runtime_error("max_r_cond must be > 1 for alpha_R condition-number normalization.");
     }
+    if (scheduler_cfg_.max_events <= 0)
+      throw std::runtime_error("dvc_rrxio/scheduler/max_events must be > 0.");
+    if (scheduler_cfg_.watermark_margin_s < 0.0)
+      throw std::runtime_error("dvc_rrxio/scheduler/watermark_margin_s must be >= 0.");
+    if (scheduler_cfg_.watermark_max_wait_s <= 0.0)
+      throw std::runtime_error("dvc_rrxio/scheduler/watermark_max_wait_s must be > 0.");
+    if (scheduler_cfg_.radar_imu_window_s <= 0.0)
+      throw std::runtime_error("dvc_rrxio/scheduler/radar_imu_window_s must be > 0.");
     initDvcDiagLogging();
 
     subImu_                 = nh_.subscribe(topic_imu, 2000, &RovioNode::imuCallback, this);
@@ -514,11 +640,40 @@ public:
     markerMsg_.color.r            = 0.0;
     markerMsg_.color.g            = 1.0;
     markerMsg_.color.b            = 0.0;
+
+    if (scheduler_cfg_.enable_diag)
+    {
+      initSchedulerDiagLogging();
+    }
+
+    if (scheduler_mode_ != SchedulerMode::Legacy)
+    {
+      worker_running_.store(true);
+      estimator_worker_ = std::thread(&RovioNode::estimatorWorkerLoop, this);
+      ROS_INFO_STREAM("[scheduler] enabled mode=" << scheduler_cfg_.mode << ", max_events=" << scheduler_cfg_.max_events
+                                                  << ", watermark_margin_s=" << scheduler_cfg_.watermark_margin_s
+                                                  << ", watermark_max_wait_s=" << scheduler_cfg_.watermark_max_wait_s);
+    }
   }
 
   /** \brief Destructor
    */
-  virtual ~RovioNode() {}
+  virtual ~RovioNode()
+  {
+    if (scheduler_mode_ != SchedulerMode::Legacy)
+    {
+      worker_running_.store(false);
+      scheduler_cv_.notify_all();
+      if (estimator_worker_.joinable())
+      {
+        estimator_worker_.join();
+      }
+    }
+    if (dvc_diag_stream_.is_open())
+      dvc_diag_stream_.close();
+    if (dvc_sched_diag_stream_.is_open())
+      dvc_sched_diag_stream_.close();
+  }
 
   static bool ensureDirectory(const std::string& directory)
   {
@@ -705,6 +860,415 @@ public:
     dvc_diag_stream_.flush();
   }
 
+  bool isEventMode() const { return scheduler_mode_ != SchedulerMode::Legacy; }
+  bool isWorkerThread() const { return isEventMode() && std::this_thread::get_id() == worker_thread_id_; }
+  size_t getSchedulerQueueDepth()
+  {
+    std::lock_guard<std::mutex> lock(scheduler_mutex_);
+    return event_queue_.size();
+  }
+  size_t getSchedulerMaxEvents() const { return static_cast<size_t>(scheduler_cfg_.max_events); }
+  bool waitUntilSchedulerQueueBelow(const size_t target_depth, const double timeout_s)
+  {
+    const double start_wall = ros::WallTime::now().toSec();
+    while (ros::ok())
+    {
+      {
+        std::lock_guard<std::mutex> lock(scheduler_mutex_);
+        if (event_queue_.size() <= target_depth)
+          return true;
+      }
+      if (timeout_s > 0.0 && (ros::WallTime::now().toSec() - start_wall) > timeout_s)
+        return false;
+      ros::WallDuration(0.001).sleep();
+    }
+    return false;
+  }
+  bool waitUntilSchedulerDrained(const double timeout_s)
+  {
+    const double start_wall = ros::WallTime::now().toSec();
+    while (ros::ok())
+    {
+      bool empty = false;
+      {
+        std::lock_guard<std::mutex> lock(scheduler_mutex_);
+        empty = event_queue_.empty();
+      }
+      if (empty && !worker_processing_.load())
+        return true;
+      if (timeout_s > 0.0 && (ros::WallTime::now().toSec() - start_wall) > timeout_s)
+        return false;
+      ros::WallDuration(0.001).sleep();
+    }
+    return false;
+  }
+
+  int eventPriority(const EventType type) const
+  {
+    switch (type)
+    {
+      case EventType::Imu:
+        return 0;
+      case EventType::Image0:
+      case EventType::Image1:
+        return 1;
+      case EventType::RadarTrigger:
+      case EventType::RadarScan:
+        return 2;
+      case EventType::GroundtruthPose:
+      case EventType::GroundtruthOdometry:
+      case EventType::Velocity:
+        return 3;
+      case EventType::Reset:
+      case EventType::ResetToPose:
+        return 4;
+      default:
+        return 5;
+    }
+  }
+
+  static const char* eventTypeName(const EventType type)
+  {
+    switch (type)
+    {
+      case EventType::Imu:
+        return "imu";
+      case EventType::Image0:
+        return "image0";
+      case EventType::Image1:
+        return "image1";
+      case EventType::GroundtruthPose:
+        return "groundtruth_pose";
+      case EventType::GroundtruthOdometry:
+        return "groundtruth_odom";
+      case EventType::Velocity:
+        return "velocity";
+      case EventType::RadarTrigger:
+        return "radar_trigger";
+      case EventType::RadarScan:
+        return "radar_scan";
+      case EventType::Reset:
+        return "reset";
+      case EventType::ResetToPose:
+        return "reset_to_pose";
+      default:
+        return "unknown";
+    }
+  }
+
+  void initSchedulerDiagLogging()
+  {
+    if (!scheduler_cfg_.enable_diag)
+      return;
+
+    std::string output_dir = scheduler_cfg_.diag_output_dir.empty() ? dvc_diag_output_dir_ : scheduler_cfg_.diag_output_dir;
+    if (output_dir.empty())
+    {
+      ROS_WARN_STREAM("[scheduler] diagnostics enabled but no output directory set.");
+      scheduler_cfg_.enable_diag = false;
+      return;
+    }
+    if (!ensureDirectory(output_dir))
+    {
+      ROS_WARN_STREAM("[scheduler] failed creating diagnostics directory: " << output_dir);
+      scheduler_cfg_.enable_diag = false;
+      return;
+    }
+
+    if (dvc_run_id_.empty())
+    {
+      std::ostringstream oss;
+      oss << "run_" << ros::WallTime::now().toNSec();
+      dvc_run_id_ = oss.str();
+    }
+
+    const std::string path = output_dir + "/dvc_sched_diag_" + dvc_run_id_ + ".csv";
+    dvc_sched_diag_stream_.open(path.c_str(), std::ios::out | std::ios::trunc);
+    if (!dvc_sched_diag_stream_.good())
+    {
+      ROS_WARN_STREAM("[scheduler] failed opening diagnostics file: " << path);
+      scheduler_cfg_.enable_diag = false;
+      return;
+    }
+
+    dvc_sched_diag_stream_
+        << "row_id,event_timestamp,event_enqueue_wall_time,event_process_wall_time,scheduler_mode,event_type,"
+        << "queue_depth,event_latency_ms,watermark_wait_ms,drop_total,drop_type,lock_wait_us,lock_hold_us,"
+        << "radar_enqueue_to_commit_ms,radar_starved\n";
+    dvc_sched_diag_stream_.flush();
+  }
+
+  void writeSchedulerDiagRow(const SensorEvent& event,
+                             const size_t queue_depth,
+                             const double event_latency_ms,
+                             const double watermark_wait_ms,
+                             const double lock_wait_us,
+                             const double lock_hold_us,
+                             const double radar_enqueue_to_commit_ms,
+                             const int radar_starved,
+                             const bool force_log = false)
+  {
+    if (!scheduler_cfg_.enable_diag || !dvc_sched_diag_stream_.good())
+      return;
+    if (!force_log && scheduler_mode_ != SchedulerMode::Legacy && !scheduler_cfg_.diag_log_all_events &&
+        event.type != EventType::RadarScan && event.type != EventType::RadarTrigger)
+    {
+      return;
+    }
+
+    dvc_sched_diag_stream_ << dvc_sched_diag_rows_++ << "," << std::fixed << std::setprecision(9) << event.timestamp
+                           << "," << event.enqueue_wall_time << "," << ros::WallTime::now().toSec() << ","
+                           << scheduler_cfg_.mode << "," << eventTypeName(event.type) << "," << queue_depth << ","
+                           << event_latency_ms << "," << watermark_wait_ms << "," << event_queue_stats_.dropped_total
+                           << "," << last_drop_type_ << "," << lock_wait_us << "," << lock_hold_us << ","
+                           << radar_enqueue_to_commit_ms << "," << radar_starved << "\n";
+    dvc_sched_diag_stream_.flush();
+  }
+
+  void enqueueEvent(SensorEvent event)
+  {
+    if (!isEventMode())
+      return;
+
+    {
+      std::lock_guard<std::mutex> lock(scheduler_mutex_);
+      event.seq               = ++event_seq_;
+      event.enqueue_wall_time = ros::WallTime::now().toSec();
+
+      if (event_queue_.size() >= static_cast<size_t>(scheduler_cfg_.max_events))
+      {
+        const SensorEvent dropped = event_queue_.front();
+        event_queue_.pop_front();
+        watermark_block_start_sec_.erase(dropped.seq);
+        event_queue_stats_.dropped_total++;
+        event_queue_stats_.dropped_by_type[dropped.type]++;
+        last_drop_type_ = eventTypeName(dropped.type);
+      }
+
+      event_queue_.push_back(event);
+      event_queue_stats_.enqueued++;
+    }
+    scheduler_cv_.notify_one();
+  }
+
+  bool isEventEligible(const SensorEvent& event) const
+  {
+    if (event.type == EventType::Imu || event.type == EventType::Reset || event.type == EventType::ResetToPose)
+      return true;
+    return latest_imu_time_ >= event.timestamp + scheduler_cfg_.watermark_margin_s;
+  }
+
+  bool popNextReadyEvent(SensorEvent& event, double& watermark_wait_ms, size_t& queue_depth_after_pop)
+  {
+    std::unique_lock<std::mutex> lock(scheduler_mutex_);
+    while (worker_running_.load())
+    {
+      if (event_queue_.empty())
+      {
+        scheduler_cv_.wait_for(lock, std::chrono::milliseconds(10));
+        continue;
+      }
+
+      size_t best_idx      = event_queue_.size();
+      double best_ts       = std::numeric_limits<double>::infinity();
+      int best_priority    = std::numeric_limits<int>::max();
+      uint64_t best_seq    = std::numeric_limits<uint64_t>::max();
+      bool any_waiting_non_imu = false;
+      const double now_wall = ros::WallTime::now().toSec();
+
+      for (size_t i = 0; i < event_queue_.size(); ++i)
+      {
+        const SensorEvent& candidate = event_queue_[i];
+        if (!isEventEligible(candidate))
+        {
+          if (candidate.type != EventType::Imu)
+          {
+            any_waiting_non_imu = true;
+            if (watermark_block_start_sec_.find(candidate.seq) == watermark_block_start_sec_.end())
+            {
+              watermark_block_start_sec_[candidate.seq] = now_wall;
+            }
+          }
+          continue;
+        }
+
+        const int p = eventPriority(candidate.type);
+        if (candidate.timestamp < best_ts ||
+            (candidate.timestamp == best_ts && (p < best_priority || (p == best_priority && candidate.seq < best_seq))))
+        {
+          best_idx      = i;
+          best_ts       = candidate.timestamp;
+          best_priority = p;
+          best_seq      = candidate.seq;
+        }
+      }
+
+      if (best_idx == event_queue_.size())
+      {
+        if (any_waiting_non_imu)
+        {
+          event_queue_stats_.watermark_block_count++;
+          size_t drop_idx = event_queue_.size();
+          double longest_wait_s = 0.0;
+          for (size_t i = 0; i < event_queue_.size(); ++i)
+          {
+            const SensorEvent& candidate = event_queue_[i];
+            if (candidate.type == EventType::Imu || candidate.type == EventType::Reset ||
+                candidate.type == EventType::ResetToPose)
+              continue;
+            const auto it_block = watermark_block_start_sec_.find(candidate.seq);
+            if (it_block == watermark_block_start_sec_.end())
+              continue;
+            const double wait_s = now_wall - it_block->second;
+            if (wait_s > longest_wait_s)
+            {
+              longest_wait_s = wait_s;
+              drop_idx = i;
+            }
+          }
+
+          if (drop_idx < event_queue_.size() && longest_wait_s >= scheduler_cfg_.watermark_max_wait_s)
+          {
+            const SensorEvent dropped = event_queue_[drop_idx];
+            event_queue_.erase(event_queue_.begin() + drop_idx);
+            watermark_block_start_sec_.erase(dropped.seq);
+            event_queue_stats_.dropped_total++;
+            event_queue_stats_.dropped_by_type[dropped.type]++;
+            last_drop_type_ = eventTypeName(dropped.type);
+            const double event_latency_ms = (now_wall - dropped.enqueue_wall_time) * 1000.0;
+            const double watermark_wait_ms = longest_wait_s * 1000.0;
+            writeSchedulerDiagRow(dropped,
+                                  event_queue_.size(),
+                                  event_latency_ms,
+                                  watermark_wait_ms,
+                                  0.0,
+                                  0.0,
+                                  std::numeric_limits<double>::quiet_NaN(),
+                                  0,
+                                  true);
+            continue;
+          }
+        }
+        scheduler_cv_.wait_for(lock, std::chrono::milliseconds(2));
+        continue;
+      }
+
+      event = event_queue_[best_idx];
+      event_queue_.erase(event_queue_.begin() + best_idx);
+      queue_depth_after_pop = event_queue_.size();
+      watermark_wait_ms = 0.0;
+      const auto it_block = watermark_block_start_sec_.find(event.seq);
+      if (it_block != watermark_block_start_sec_.end())
+      {
+        watermark_wait_ms = std::max(0.0, (ros::WallTime::now().toSec() - it_block->second) * 1000.0);
+        watermark_block_start_sec_.erase(it_block);
+      }
+      return true;
+    }
+    return false;
+  }
+
+  bool computeRadarOmegaFromHistory(const double scan_timestamp, Eigen::Vector3d& omega_mean)
+  {
+    omega_mean.setZero();
+    size_t count = 0;
+    const double end_time = scan_timestamp + scheduler_cfg_.radar_imu_window_s;
+    for (const auto& imu : imu_history_)
+    {
+      const double t = imu.header.stamp.toSec();
+      if (t >= scan_timestamp && t <= end_time)
+      {
+        omega_mean += Eigen::Vector3d(imu.angular_velocity.x, imu.angular_velocity.y, imu.angular_velocity.z);
+        count++;
+      }
+    }
+    if (count == 0)
+      return false;
+    omega_mean /= static_cast<double>(count);
+    return true;
+  }
+
+  void updateImuHistory(const sensor_msgs::Imu::ConstPtr& imu_msg)
+  {
+    imu_history_.push_back(*imu_msg);
+    const double cutoff = imu_msg->header.stamp.toSec() - 1.0;
+    while (!imu_history_.empty() && imu_history_.front().header.stamp.toSec() < cutoff)
+      imu_history_.pop_front();
+  }
+
+  void estimatorWorkerLoop()
+  {
+    worker_thread_id_ = std::this_thread::get_id();
+    while (worker_running_.load())
+    {
+      SensorEvent event;
+      double watermark_wait_ms = 0.0;
+      size_t queue_depth_after_pop = 0;
+      if (!popNextReadyEvent(event, watermark_wait_ms, queue_depth_after_pop))
+        continue;
+
+      const double process_start = ros::WallTime::now().toSec();
+      const double event_latency_ms = (process_start - event.enqueue_wall_time) * 1000.0;
+
+      worker_processing_.store(true);
+      last_radar_enqueue_to_commit_ms_ = std::numeric_limits<double>::quiet_NaN();
+      last_radar_starved_              = 0;
+      active_radar_enqueue_wall_time_  = std::numeric_limits<double>::quiet_NaN();
+
+      switch (event.type)
+      {
+        case EventType::Imu:
+          latest_imu_time_ = std::max(latest_imu_time_, event.timestamp);
+          updateImuHistory(event.imu_msg);
+          imuCallback(event.imu_msg);
+          break;
+        case EventType::Image0:
+          imgCallback0(event.img_msg);
+          break;
+        case EventType::Image1:
+          imgCallback1(event.img_msg);
+          break;
+        case EventType::GroundtruthPose:
+          groundtruthCallback(event.gt_msg);
+          break;
+        case EventType::GroundtruthOdometry:
+          groundtruthOdometryCallback(event.gt_odom_msg);
+          break;
+        case EventType::Velocity:
+          velocityCallback(event.vel_msg);
+          break;
+        case EventType::RadarTrigger:
+          radarTriggerCallback(event.trigger_msg);
+          break;
+        case EventType::RadarScan:
+          active_radar_enqueue_wall_time_ = event.enqueue_wall_time;
+          radarScanCallback(event.radar_scan_msg);
+          break;
+        case EventType::Reset:
+          requestReset();
+          break;
+        case EventType::ResetToPose:
+          requestResetToPose(event.reset_WrWM, event.reset_qMW);
+          break;
+        default:
+          break;
+      }
+
+      worker_processing_.store(false);
+      active_radar_enqueue_wall_time_ = std::numeric_limits<double>::quiet_NaN();
+      event_queue_stats_.processed++;
+
+      writeSchedulerDiagRow(event,
+                            queue_depth_after_pop,
+                            event_latency_ms,
+                            watermark_wait_ms,
+                            0.0,
+                            0.0,
+                            last_radar_enqueue_to_commit_ms_,
+                            last_radar_starved_);
+    }
+  }
+
   /** \brief Tests the functionality of the rovio node.
    *
    *  @todo debug with   doVECalibration = false and depthType = 0
@@ -823,15 +1387,27 @@ public:
    */
   void imuCallback(const sensor_msgs::Imu::ConstPtr& imu_msg)
   {
-    std::lock_guard<std::mutex> lock(m_filter_);
+    if (isEventMode() && !isWorkerThread())
+    {
+      SensorEvent event;
+      event.type      = EventType::Imu;
+      event.timestamp = imu_msg->header.stamp.toSec();
+      event.imu_msg   = imu_msg;
+      enqueueEvent(event);
+      return;
+    }
+
+    std::unique_lock<std::mutex> lock(m_filter_, std::defer_lock);
+    if (!isEventMode() || !isWorkerThread())
+      lock.lock();
 
     if (most_recent_imus_.size() < 20)
       most_recent_imus_.emplace_back(*imu_msg);
 
     // check for radar scan processing wait for radar scan to be completed --> 20ms
     // TODO make parameter
-    if (most_recent_radar_scan_.header.stamp > ros::TIME_MIN &&
-        most_recent_radar_scan_.header.stamp.toSec() + 20e-3 < imu_msg->header.stamp.toSec())
+    if (scheduler_mode_ != SchedulerMode::EventStage2 && most_recent_radar_scan_.header.stamp > ros::TIME_MIN &&
+        most_recent_radar_scan_.header.stamp.toSec() + scheduler_cfg_.radar_imu_window_s < imu_msg->header.stamp.toSec())
     {
       // calc mean omega
       Eigen::Vector3d w(0, 0, 0);
@@ -848,7 +1424,11 @@ public:
     if (init_state_.isInitialized())
     {
       mpFilter_->addPredictionMeas(predictionMeas_, imu_msg->header.stamp.toSec());
-      updateAndPublish();
+      // Event-queue modes defer costly updateSafe/publish calls to non-IMU events.
+      if (scheduler_mode_ == SchedulerMode::Legacy)
+      {
+        updateAndPublish();
+      }
     }
     else
     {
@@ -888,7 +1468,18 @@ public:
    */
   void imgCallback0(const sensor_msgs::ImageConstPtr& img)
   {
-    std::lock_guard<std::mutex> lock(m_filter_);
+    if (isEventMode() && !isWorkerThread())
+    {
+      SensorEvent event;
+      event.type      = EventType::Image0;
+      event.timestamp = img->header.stamp.toSec();
+      event.img_msg   = img;
+      enqueueEvent(event);
+      return;
+    }
+    std::unique_lock<std::mutex> lock(m_filter_, std::defer_lock);
+    if (!isEventMode() || !isWorkerThread())
+      lock.lock();
     imgCallback(img, 0);
   }
 
@@ -899,7 +1490,18 @@ public:
    */
   void imgCallback1(const sensor_msgs::ImageConstPtr& img)
   {
-    std::lock_guard<std::mutex> lock(m_filter_);
+    if (isEventMode() && !isWorkerThread())
+    {
+      SensorEvent event;
+      event.type      = EventType::Image1;
+      event.timestamp = img->header.stamp.toSec();
+      event.img_msg   = img;
+      enqueueEvent(event);
+      return;
+    }
+    std::unique_lock<std::mutex> lock(m_filter_, std::defer_lock);
+    if (!isEventMode() || !isWorkerThread())
+      lock.lock();
     if (mtState::nCam_ > 1)
       imgCallback(img, 1);
   }
@@ -957,7 +1559,18 @@ public:
    */
   void groundtruthCallback(const geometry_msgs::TransformStamped::ConstPtr& transform)
   {
-    std::lock_guard<std::mutex> lock(m_filter_);
+    if (isEventMode() && !isWorkerThread())
+    {
+      SensorEvent event;
+      event.type      = EventType::GroundtruthPose;
+      event.timestamp = transform->header.stamp.toSec();
+      event.gt_msg    = transform;
+      enqueueEvent(event);
+      return;
+    }
+    std::unique_lock<std::mutex> lock(m_filter_, std::defer_lock);
+    if (!isEventMode() || !isWorkerThread())
+      lock.lock();
     if (init_state_.isInitialized())
     {
       Eigen::Vector3d JrJV(
@@ -980,7 +1593,18 @@ public:
    */
   void groundtruthOdometryCallback(const nav_msgs::Odometry::ConstPtr& odometry)
   {
-    std::lock_guard<std::mutex> lock(m_filter_);
+    if (isEventMode() && !isWorkerThread())
+    {
+      SensorEvent event;
+      event.type      = EventType::GroundtruthOdometry;
+      event.timestamp = odometry->header.stamp.toSec();
+      event.gt_odom_msg = odometry;
+      enqueueEvent(event);
+      return;
+    }
+    std::unique_lock<std::mutex> lock(m_filter_, std::defer_lock);
+    if (!isEventMode() || !isWorkerThread())
+      lock.lock();
     if (init_state_.isInitialized())
     {
       Eigen::Vector3d JrJV(
@@ -1009,7 +1633,18 @@ public:
    */
   void velocityCallback(const geometry_msgs::TwistStamped::ConstPtr& velocity)
   {
-    std::lock_guard<std::mutex> lock(m_filter_);
+    if (isEventMode() && !isWorkerThread())
+    {
+      SensorEvent event;
+      event.type      = EventType::Velocity;
+      event.timestamp = velocity->header.stamp.toSec();
+      event.vel_msg   = velocity;
+      enqueueEvent(event);
+      return;
+    }
+    std::unique_lock<std::mutex> lock(m_filter_, std::defer_lock);
+    if (!isEventMode() || !isWorkerThread())
+      lock.lock();
     if (init_state_.isInitialized())
     {
       Eigen::Vector3d AvM(velocity->twist.linear.x, velocity->twist.linear.y, velocity->twist.linear.z);
@@ -1025,6 +1660,13 @@ public:
    */
   void radarTriggerCallback(const std_msgs::HeaderConstPtr& header)
   {
+    if (isEventMode() && !isWorkerThread())
+    {
+      // Trigger callback does not feed estimator state. Keep it out of the
+      // event queue to avoid artificial backlog and latency inflation.
+      return;
+    }
+
     //    if (most_recent_imu_.header.stamp.toSec() + 5.0e-3 < header->stamp.toSec())
     //    {
     //      ROS_WARN("[radarTriggerCallback]: Most recent IMU %0.3f is older than radar trigger %0.3f!",
@@ -1051,11 +1693,65 @@ public:
    */
   void radarScanCallback(const sensor_msgs::PointCloud2ConstPtr& radar_scan)
   {
-    std::lock_guard<std::mutex> lock(m_filter_);
+    if (isEventMode() && !isWorkerThread())
+    {
+      SensorEvent event;
+      event.type      = EventType::RadarScan;
+      event.timestamp = radar_scan->header.stamp.toSec();
+      event.radar_scan_msg = radar_scan;
+      enqueueEvent(event);
+      return;
+    }
+
+    std::unique_lock<std::mutex> lock(m_filter_, std::defer_lock);
+    const double lock_wait_begin = ros::WallTime::now().toSec();
+    double lock_wait_us          = 0.0;
+    double lock_hold_us          = 0.0;
+    last_radar_enqueue_to_commit_ms_ = std::numeric_limits<double>::quiet_NaN();
+    last_radar_starved_              = 0;
+    if (!isEventMode() || !isWorkerThread())
+    {
+      lock.lock();
+      lock_wait_us = std::max(0.0, (ros::WallTime::now().toSec() - lock_wait_begin) * 1.0e6);
+    }
+    const double lock_hold_begin = ros::WallTime::now().toSec();
     radar_scan_callback_count_++;
+    if (scheduler_mode_ == SchedulerMode::EventStage2)
+    {
+      most_recent_radar_scan_ = *radar_scan;
+      Eigen::Vector3d w(0, 0, 0);
+      if (!computeRadarOmegaFromHistory(radar_scan->header.stamp.toSec(), w))
+      {
+        last_radar_starved_ = 1;
+        event_queue_stats_.radar_starved_count++;
+        const reve::RadarEstimationDiag diag;
+        writeDvcDiagRow(radar_scan->header.stamp.toSec(),
+                        diag,
+                        nullptr,
+                        0,
+                        std::numeric_limits<double>::quiet_NaN(),
+                        std::numeric_limits<double>::quiet_NaN(),
+                        radar_cov_recalib_cfg_.cov_mode,
+                        std::numeric_limits<double>::quiet_NaN(),
+                        std::numeric_limits<double>::quiet_NaN(),
+                        std::numeric_limits<double>::quiet_NaN(),
+                        0,
+                        0,
+                        0);
+        most_recent_radar_scan_.header.stamp = ros::TIME_MIN;
+        return;
+      }
+      processRadarScan(w - mpFilter_->safe_.state_.gyb());
+      return;
+    }
+
     // clear imu buffer --> collect imu measurements during radar scan for improved omega
     most_recent_imus_.clear();
     most_recent_radar_scan_ = *radar_scan;
+    active_radar_enqueue_wall_time_ = ros::WallTime::now().toSec();
+    (void)lock_wait_us;
+    (void)lock_hold_us;
+    (void)lock_hold_begin;
   }
 
   void processRadarScan(const Eigen::Vector3d& w)
@@ -1072,6 +1768,7 @@ public:
     int nis_valid             = 0;
     int nis_exceed_95         = 0;
     int radar_update_committed = 0;
+    last_radar_enqueue_to_commit_ms_ = std::numeric_limits<double>::quiet_NaN();
 
     const double t_reve_start = ros::WallTime::now().toSec();
 
@@ -1116,6 +1813,10 @@ public:
         nis_valid = std::isfinite(nis_vel) ? 1 : 0;
         radar_update_committed = (nis_valid == 1 && !vel_diag.is_outlier) ? 1 : 0;
         nis_exceed_95          = (nis_valid == 1 && std::isfinite(nis_vel) && nis_vel > kChi2_3_95_) ? 1 : 0;
+        if (radar_update_committed == 1 && std::isfinite(active_radar_enqueue_wall_time_))
+        {
+          last_radar_enqueue_to_commit_ms_ = (ros::WallTime::now().toSec() - active_radar_enqueue_wall_time_) * 1000.0;
+        }
 
         writeDvcDiagRow(most_recent_radar_scan_.header.stamp.toSec(),
                         radar_diag,
@@ -1186,7 +1887,26 @@ public:
                       nis_exceed_95,
                       radar_update_committed);
     }
+    if (scheduler_mode_ == SchedulerMode::Legacy && scheduler_cfg_.enable_diag)
+    {
+      SensorEvent diag_event;
+      diag_event.type              = EventType::RadarScan;
+      diag_event.timestamp         = most_recent_radar_scan_.header.stamp.toSec();
+      diag_event.enqueue_wall_time = active_radar_enqueue_wall_time_;
+      const double latency_ms =
+          std::isfinite(active_radar_enqueue_wall_time_) ? (ros::WallTime::now().toSec() - active_radar_enqueue_wall_time_) * 1000.0
+                                                         : std::numeric_limits<double>::quiet_NaN();
+      writeSchedulerDiagRow(diag_event,
+                            0,
+                            latency_ms,
+                            0.0,
+                            0.0,
+                            0.0,
+                            last_radar_enqueue_to_commit_ms_,
+                            last_radar_starved_);
+    }
     most_recent_radar_scan_.header.stamp = ros::TIME_MIN;
+    active_radar_enqueue_wall_time_      = std::numeric_limits<double>::quiet_NaN();
   }
 
   /** \brief ROS service handler for resetting the filter.
@@ -1214,7 +1934,17 @@ public:
    */
   void requestReset()
   {
-    std::lock_guard<std::mutex> lock(m_filter_);
+    if (isEventMode() && !isWorkerThread())
+    {
+      SensorEvent event;
+      event.type      = EventType::Reset;
+      event.timestamp = ros::Time::now().toSec();
+      enqueueEvent(event);
+      return;
+    }
+    std::unique_lock<std::mutex> lock(m_filter_, std::defer_lock);
+    if (!isEventMode() || !isWorkerThread())
+      lock.lock();
     if (!init_state_.isInitialized())
     {
       std::cout << "Reinitialization already triggered. Ignoring request...";
@@ -1231,7 +1961,19 @@ public:
    */
   void requestResetToPose(const V3D& WrWM, const QPD& qMW)
   {
-    std::lock_guard<std::mutex> lock(m_filter_);
+    if (isEventMode() && !isWorkerThread())
+    {
+      SensorEvent event;
+      event.type      = EventType::ResetToPose;
+      event.timestamp = ros::Time::now().toSec();
+      event.reset_WrWM = WrWM;
+      event.reset_qMW  = qMW;
+      enqueueEvent(event);
+      return;
+    }
+    std::unique_lock<std::mutex> lock(m_filter_, std::defer_lock);
+    if (!isEventMode() || !isWorkerThread())
+      lock.lock();
     if (!init_state_.isInitialized())
     {
       std::cout << "Reinitialization already triggered. Ignoring request...";
@@ -1254,19 +1996,28 @@ public:
       static double timing_T   = 0;
       static int timing_C      = 0;
       const double oldSafeTime = mpFilter_->safe_.t_;
-      int c1                   = std::get<ROVIO_UPDATE_SOURCE>(mpFilter_->updateTimelineTuple_).measMap_.size();
-      double lastImageTime;
+      int c1                   = 0;
+      int c2                   = 0;
 
-      // select queue to trigger updates 0: img, 2: radar velocity
-      if (std::get<ROVIO_UPDATE_SOURCE>(mpFilter_->updateTimelineTuple_).getLastTime(lastImageTime))
+      if (scheduler_mode_ == SchedulerMode::Legacy)
       {
-        mpFilter_->updateSafe(&lastImageTime);
+        c1 = std::get<ROVIO_UPDATE_SOURCE>(mpFilter_->updateTimelineTuple_).measMap_.size();
+        double lastImageTime;
+        // select queue to trigger updates 0: img, 2: radar velocity
+        if (std::get<ROVIO_UPDATE_SOURCE>(mpFilter_->updateTimelineTuple_).getLastTime(lastImageTime))
+        {
+          mpFilter_->updateSafe(&lastImageTime);
+        }
+        c2 = std::get<ROVIO_UPDATE_SOURCE>(mpFilter_->updateTimelineTuple_).measMap_.size();
+      }
+      else
+      {
+        mpFilter_->updateSafe();
       }
 
       const double t2 = (double)cv::getTickCount();
-      int c2          = std::get<ROVIO_UPDATE_SOURCE>(mpFilter_->updateTimelineTuple_).measMap_.size();
       timing_T += (t2 - t1) / cv::getTickFrequency() * 1000;
-      timing_C += c1 - c2;
+      timing_C += std::max(1, c1 - c2);
       bool plotTiming = false;
       if (plotTiming)
       {

@@ -41,8 +41,8 @@ def _append_manifest_row(manifest_csv, row):
     header = [
         "run_id", "date", "week", "stage", "dataset", "modality", "launch_file", "config_info", "camera_config",
         "bag_start", "bag_duration", "timeshift_cam_imu", "topic_radar_trigger", "topic_radar_scan", "feature_num",
-        "git_rev_root", "git_rev_reve", "cov_mode", "config_tag", "status", "owner", "note", "runtime_s",
-        "export_directory", "diag_file"
+        "git_rev_root", "git_rev_reve", "cov_mode", "scheduler_mode", "config_tag", "status", "owner", "note",
+        "runtime_s", "export_directory", "diag_file", "sched_diag_file"
     ]
     is_new = not os.path.isfile(manifest_csv)
     with open(manifest_csv, "a", newline="", encoding="utf-8") as f:
@@ -97,13 +97,18 @@ def run_feature(args, n_feature, git_rev_root, git_rev_reve):
         {"name": "outdoor_campus", "start_time": 0, "ground_truth_type": evaluate_ground_truth.PSEUDO_GT},
         {"name": "outdoor_street", "start_time": 0, "ground_truth_type": evaluate_ground_truth.PSEUDO_GT},
     ]
+    if args.datasets:
+        wanted = {d.strip() for d in args.datasets.split(",") if d.strip()}
+        datasets = [d for d in datasets if d["name"] in wanted]
+        if not datasets:
+            raise RuntimeError("No dataset selected after filtering. --datasets=%s" % args.datasets)
 
     rospack = rospkg.RosPack()
     default_params = "shutdown_when_done:=True enable_rviz:=False"
     topic_radar_trigger = "/sensor_platform/radar/trigger"
     topic_radar_scan = "/sensor_platform/radar/scan"
 
-    runs = len(base_configs) * len(configs) * len(datasets) * len(args.cov_modes)
+    runs = len(base_configs) * len(configs) * len(datasets) * len(args.cov_modes) * len(args.scheduler_modes)
     ctr = 0
     start_time = time.time()
 
@@ -114,46 +119,49 @@ def run_feature(args, n_feature, git_rev_root, git_rev_reve):
             euroc_name = dataset["name"]
             for config in configs:
                 for cov_mode in args.cov_modes:
-                    ctr += 1
-                    print("############################################################")
-                    rem_min = (runs - ctr) * (time.time() - start_time) / max(1, ctr) / 60.0
-                    print("%s: Progress %d / %d remaining time %0.2fmin" % (str(n_feature), ctr, runs, rem_min))
-                    print("############################################################")
+                    for scheduler_mode in args.scheduler_modes:
+                        ctr += 1
+                        print("############################################################")
+                        rem_min = (runs - ctr) * (time.time() - start_time) / max(1, ctr) / 60.0
+                        print("%s: Progress %d / %d remaining time %0.2fmin" % (str(n_feature), ctr, runs, rem_min))
+                        print("############################################################")
 
-                    config_tag = config["name"] + "_" + cov_mode
-                    config_name = base_config["name"] + "_" + config_tag
-                    export_directory_run = os.path.join(
-                        result_base_directory,
-                        base_config["modality"],
-                        config_name,
-                        "nuc_" + config_name + "_" + euroc_name,
-                    )
-                    _ensure_dir(export_directory_run)
-
-                    src_config = os.path.join(rospack.get_path("rrxio"), "launch", "configs", base_config["config"])
-                    dst_config = os.path.join(export_directory_run, config_name + ".info")
-                    with open(src_config, "r", encoding="utf-8") as f:
-                        config_str = "".join(f.readlines())
-                    for old, new in config["changes"].items():
-                        config_str = config_str.replace(old, new)
-                    with open(dst_config, "w", encoding="utf-8") as f:
-                        f.write(config_str)
-
-                    # DVC diagnostic outputs by run
-                    diag_output_dir = os.path.join(args.results_root, "dvc_w6_diag")
-                    _ensure_dir(diag_output_dir)
-
-                    for k in range(args.n_trials):
-                        run_id = "%s_%s_%s_%s_%s_t%d" % (
-                            dt.datetime.now().strftime("%Y%m%d_%H%M%S"),
-                            str(n_feature),
+                        config_tag = config["name"] + "_" + cov_mode + "_" + scheduler_mode
+                        config_name = base_config["name"] + "_" + config_tag
+                        export_directory_run = os.path.join(
+                            result_base_directory,
                             base_config["modality"],
-                            euroc_name,
-                            cov_mode,
-                            k,
+                            config_name,
+                            "nuc_" + config_name + "_" + euroc_name,
                         )
+                        _ensure_dir(export_directory_run)
 
-                        cmd = (
+                        src_config = os.path.join(rospack.get_path("rrxio"), "launch", "configs", base_config["config"])
+                        dst_config = os.path.join(export_directory_run, config_name + ".info")
+                        with open(src_config, "r", encoding="utf-8") as f:
+                            config_str = "".join(f.readlines())
+                        for old, new in config["changes"].items():
+                            config_str = config_str.replace(old, new)
+                        with open(dst_config, "w", encoding="utf-8") as f:
+                            f.write(config_str)
+
+                        # DVC diagnostic outputs by run
+                        diag_output_dir = os.path.join(args.results_root, "dvc_w6_diag")
+                        sched_diag_output_dir = os.path.join(args.results_root, "dvc_scheduler_diag")
+                        _ensure_dir(diag_output_dir)
+                        _ensure_dir(sched_diag_output_dir)
+
+                        for k in range(args.n_trials):
+                            run_id = "%s_%s_%s_%s_%s_t%d" % (
+                                dt.datetime.now().strftime("%Y%m%d_%H%M%S"),
+                                str(n_feature),
+                                base_config["modality"],
+                                euroc_name,
+                                cov_mode + "_" + scheduler_mode,
+                                k,
+                            )
+
+                            cmd = (
                             "roslaunch rrxio {launch_file} "
                             "bag_start:={bag_start} bag_duration:={bag_duration} "
                             "{default_params} "
@@ -166,8 +174,17 @@ def run_feature(args, n_feature, git_rev_root, git_rev_reve):
                             "dvc_alpha_r_w_cond:={w_cond} dvc_alpha_r_w_inlier:={w_inlier} dvc_alpha_r_w_sparse:={w_sparse} "
                             "dvc_alpha_r_n_targets_ref:={n_targets_ref} dvc_alpha_r_k_alpha:={k_alpha} "
                             "dvc_alpha_r_alpha_r_max:={alpha_r_max} dvc_alpha_r_sigma_min2:={sigma_min2} "
+                            "dvc_scheduler_mode:={scheduler_mode} dvc_scheduler_max_events:={scheduler_max_events} "
+                            "dvc_scheduler_watermark_margin_s:={scheduler_watermark_margin_s} "
+                            "dvc_scheduler_watermark_max_wait_s:={scheduler_watermark_max_wait_s} "
+                            "dvc_scheduler_radar_imu_window_s:={scheduler_radar_imu_window_s} "
+                            "dvc_scheduler_enable_diag:={scheduler_enable_diag} "
+                            "dvc_scheduler_diag_output_dir:={sched_diag_output_dir} "
+                            "dvc_scheduler_backpressure_depth:={scheduler_backpressure_depth} "
+                            "dvc_scheduler_backpressure_timeout_s:={scheduler_backpressure_timeout_s} "
+                            "dvc_scheduler_drain_timeout_s:={scheduler_drain_timeout_s} "
                             "id:={idv} {n_features}"
-                        ).format(
+                            ).format(
                             launch_file=base_config["launch_file"],
                             bag_start=dataset["start_time"],
                             bag_duration=args.bag_duration,
@@ -194,56 +211,73 @@ def run_feature(args, n_feature, git_rev_root, git_rev_reve):
                             k_alpha=args.dvc_alpha_r_k_alpha,
                             alpha_r_max=args.dvc_alpha_r_alpha_r_max,
                             sigma_min2=args.dvc_alpha_r_sigma_min2,
+                            scheduler_mode=scheduler_mode,
+                            scheduler_max_events=args.dvc_scheduler_max_events,
+                            scheduler_watermark_margin_s=args.dvc_scheduler_watermark_margin_s,
+                            scheduler_watermark_max_wait_s=args.dvc_scheduler_watermark_max_wait_s,
+                            scheduler_radar_imu_window_s=args.dvc_scheduler_radar_imu_window_s,
+                            scheduler_enable_diag=str(args.dvc_scheduler_enable_diag),
+                            sched_diag_output_dir=sched_diag_output_dir,
+                            scheduler_backpressure_depth=args.dvc_scheduler_backpressure_depth,
+                            scheduler_backpressure_timeout_s=args.dvc_scheduler_backpressure_timeout_s,
+                            scheduler_drain_timeout_s=args.dvc_scheduler_drain_timeout_s,
                             idv=str(n_feature),
                             n_features=n_rovio_features,
                         )
 
-                        print(cmd)
-                        t0 = time.time()
-                        rc = os.system(cmd + (" >/dev/null 2>&1" if args.suppress_console_output else ""))
-                        runtime_s = time.time() - t0
+                            print(cmd)
+                            t0 = time.time()
+                            rc = os.system(cmd + (" >/dev/null 2>&1" if args.suppress_console_output else ""))
+                            runtime_s = time.time() - t0
 
-                        status = "SUCCESS" if rc == 0 else "FAILED"
-                        diag_file = os.path.join(diag_output_dir, "dvc_diag_" + run_id + ".csv")
-                        _append_manifest_row(
-                            manifest_csv,
-                            {
-                                "run_id": run_id,
-                                "date": dt.datetime.now().strftime("%Y-%m-%d"),
-                                "week": args.week,
-                                "stage": args.stage,
-                                "dataset": euroc_name,
-                                "modality": base_config["modality"],
-                                "launch_file": base_config["launch_file"],
-                                "config_info": dst_config,
-                                "camera_config": base_config["camera_config"],
-                                "bag_start": dataset["start_time"],
-                                "bag_duration": args.bag_duration,
-                                "timeshift_cam_imu": base_config["timeshift_cam_imu"],
-                                "topic_radar_trigger": topic_radar_trigger,
-                                "topic_radar_scan": topic_radar_scan,
-                                "feature_num": n_feature,
-                                "git_rev_root": git_rev_root,
-                                "git_rev_reve": git_rev_reve,
-                                "cov_mode": cov_mode,
-                                "config_tag": config_tag,
-                                "status": status,
-                                "owner": args.owner,
-                                "note": "trial_%d" % k,
-                                "runtime_s": "%.6f" % runtime_s,
-                                "export_directory": export_directory_run,
-                                "diag_file": diag_file,
-                            },
-                        )
-
-                        if args.n_trials > 1 and os.path.exists(os.path.join(export_directory_run, "stamped_traj_estimate.txt")):
-                            os.system(
-                                "mv " + os.path.join(export_directory_run, "stamped_traj_estimate.txt") + " "
-                                + os.path.join(export_directory_run, "stamped_traj_estimate_%s.txt" % run_id)
+                            status = "SUCCESS" if rc == 0 else "FAILED"
+                            diag_file = os.path.join(diag_output_dir, "dvc_diag_" + run_id + ".csv")
+                            sched_diag_file = os.path.join(sched_diag_output_dir, "dvc_sched_diag_" + run_id + ".csv")
+                            _append_manifest_row(
+                                manifest_csv,
+                                {
+                                    "run_id": run_id,
+                                    "date": dt.datetime.now().strftime("%Y-%m-%d"),
+                                    "week": args.week,
+                                    "stage": args.stage,
+                                    "dataset": euroc_name,
+                                    "modality": base_config["modality"],
+                                    "launch_file": base_config["launch_file"],
+                                    "config_info": dst_config,
+                                    "camera_config": base_config["camera_config"],
+                                    "bag_start": dataset["start_time"],
+                                    "bag_duration": args.bag_duration,
+                                    "timeshift_cam_imu": base_config["timeshift_cam_imu"],
+                                    "topic_radar_trigger": topic_radar_trigger,
+                                    "topic_radar_scan": topic_radar_scan,
+                                    "feature_num": n_feature,
+                                    "git_rev_root": git_rev_root,
+                                    "git_rev_reve": git_rev_reve,
+                                    "cov_mode": cov_mode,
+                                    "scheduler_mode": scheduler_mode,
+                                    "config_tag": config_tag,
+                                    "status": status,
+                                    "owner": args.owner,
+                                    "note": "trial_%d" % k,
+                                    "runtime_s": "%.6f" % runtime_s,
+                                    "export_directory": export_directory_run,
+                                    "diag_file": diag_file,
+                                    "sched_diag_file": sched_diag_file,
+                                },
                             )
 
-                    with open(os.path.join(export_directory_run, "eval_cfg.yaml"), "w", encoding="utf-8") as config_file_eval:
-                        config_file_eval.write("align_type: posyaw\nalign_num_frames: -1")
+                            if args.n_trials > 1 and os.path.exists(
+                                os.path.join(export_directory_run, "stamped_traj_estimate.txt")
+                            ):
+                                os.system(
+                                    "mv " + os.path.join(export_directory_run, "stamped_traj_estimate.txt") + " "
+                                    + os.path.join(export_directory_run, "stamped_traj_estimate_%s.txt" % run_id)
+                                )
+
+                        with open(
+                            os.path.join(export_directory_run, "eval_cfg.yaml"), "w", encoding="utf-8"
+                        ) as config_file_eval:
+                            config_file_eval.write("align_type: posyaw\nalign_num_frames: -1")
 
     print(str(n_feature) + ": Starting evaluation...")
 
@@ -263,7 +297,8 @@ def run_feature(args, n_feature, git_rev_root, git_rev_reve):
     for base_config in base_configs:
         for config in configs:
             for cov_mode in args.cov_modes:
-                algos.append(base_config["name"] + "_" + config["name"] + "_" + cov_mode)
+                for scheduler_mode in args.scheduler_modes:
+                    algos.append(base_config["name"] + "_" + config["name"] + "_" + cov_mode + "_" + scheduler_mode)
 
     for algo in algos:
         s += ws + algo + ":\n"
@@ -309,6 +344,16 @@ def main():
     parser.add_argument("--dvc_alpha_r_k_alpha", type=float, default=1.5)
     parser.add_argument("--dvc_alpha_r_alpha_r_max", type=float, default=5.0)
     parser.add_argument("--dvc_alpha_r_sigma_min2", type=float, default=1.0e-4)
+    parser.add_argument("--scheduler_modes", default="legacy", help="Comma-separated scheduler modes")
+    parser.add_argument("--dvc_scheduler_max_events", type=int, default=2048)
+    parser.add_argument("--dvc_scheduler_watermark_margin_s", type=float, default=0.002)
+    parser.add_argument("--dvc_scheduler_watermark_max_wait_s", type=float, default=0.200)
+    parser.add_argument("--dvc_scheduler_radar_imu_window_s", type=float, default=0.020)
+    parser.add_argument("--dvc_scheduler_backpressure_depth", type=int, default=-1)
+    parser.add_argument("--dvc_scheduler_backpressure_timeout_s", type=float, default=5.0)
+    parser.add_argument("--dvc_scheduler_drain_timeout_s", type=float, default=120.0)
+    parser.add_argument("--dvc_scheduler_enable_diag", action="store_true", default=False)
+    parser.add_argument("--datasets", default="", help="Comma-separated dataset names")
     args = parser.parse_args()
 
     args.rosbag_dir = args.rosbag_dir if args.rosbag_dir.endswith("/") else args.rosbag_dir + "/"
@@ -326,6 +371,12 @@ def main():
     for mode in args.cov_modes:
         if mode not in ("base", "fixed", "alpha_r"):
             raise RuntimeError("Unsupported cov mode: %s" % mode)
+    args.scheduler_modes = [m.strip().lower() for m in args.scheduler_modes.split(",") if m.strip()]
+    if not args.scheduler_modes:
+        raise RuntimeError("No scheduler mode provided.")
+    for mode in args.scheduler_modes:
+        if mode not in ("legacy", "event_stage1", "event_stage2"):
+            raise RuntimeError("Unsupported scheduler mode: %s" % mode)
 
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     git_rev_root = _git_rev(repo_root)

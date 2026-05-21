@@ -35,6 +35,7 @@
 #include <iostream>
 #include <locale>
 #include <string>
+#include <algorithm>
 #include <Eigen/StdVector>
 #include "rrxio/RRxIOFilter.hpp"
 #include "rrxio/RRxIONode.hpp"
@@ -169,6 +170,17 @@ int main(int argc, char** argv)
   double bag_duration = -1.;
   nh_private.param("bag_duration", bag_duration, bag_duration);
 
+  int scheduler_backpressure_depth = -1;
+  nh_private.param("scheduler_backpressure_depth", scheduler_backpressure_depth, scheduler_backpressure_depth);
+
+  double scheduler_backpressure_timeout_s = 5.0;
+  nh_private.param("scheduler_backpressure_timeout_s",
+                   scheduler_backpressure_timeout_s,
+                   scheduler_backpressure_timeout_s);
+
+  double scheduler_drain_timeout_s = 120.0;
+  nh_private.param("scheduler_drain_timeout_s", scheduler_drain_timeout_s, scheduler_drain_timeout_s);
+
   double sigma_v_b_x = 0.0;
   nh_private.param("sigma_v_b_x", sigma_v_b_x, sigma_v_b_x);
 
@@ -213,6 +225,13 @@ int main(int argc, char** argv)
   double lastTriggerTime    = 0.0;
   ros::Time start           = ros::TIME_MIN;
   uint frame_ctr            = 0;
+  const bool event_mode     = rovioNode.isEventMode();
+  const int default_backpressure_depth =
+      static_cast<int>(std::max<size_t>(64, rovioNode.getSchedulerMaxEvents() / static_cast<size_t>(8)));
+  if (scheduler_backpressure_depth <= 0)
+  {
+    scheduler_backpressure_depth = default_backpressure_depth;
+  }
 
   for (rosbag::View::iterator it = view.begin(); it != view.end() && ros::ok(); it++)
   {
@@ -286,6 +305,28 @@ int main(int argc, char** argv)
     }
 
     ros::spinOnce();
+
+    if (event_mode)
+    {
+      const bool queue_ok = rovioNode.waitUntilSchedulerQueueBelow(static_cast<size_t>(scheduler_backpressure_depth),
+                                                                    scheduler_backpressure_timeout_s);
+      if (!queue_ok)
+      {
+        ROS_WARN_STREAM("[scheduler] queue backpressure wait timeout. depth=" << rovioNode.getSchedulerQueueDepth()
+                                                                              << " target="
+                                                                              << scheduler_backpressure_depth);
+      }
+    }
+  }
+
+  if (event_mode)
+  {
+    const bool drained = rovioNode.waitUntilSchedulerDrained(scheduler_drain_timeout_s);
+    if (!drained)
+    {
+      ROS_WARN_STREAM("[scheduler] worker drain timeout at end of bag. remaining_depth="
+                      << rovioNode.getSchedulerQueueDepth());
+    }
   }
 
   bagIn.close();
