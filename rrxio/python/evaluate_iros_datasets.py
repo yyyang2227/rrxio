@@ -119,6 +119,12 @@ def _write_dvc_unified_config(path,
         "    k_alpha: {k_alpha}\n"
         "    alpha_r_max: {alpha_r_max}\n"
         "    sigma_min2: {sigma_min2}\n"
+        "  s_k:\n"
+        "    enable: {sk_enable}\n"
+        "    tau_obs: {sk_tau_obs}\n"
+        "    c_obs: {sk_c_obs}\n"
+        "    s_max: {sk_s_max}\n"
+        "    eps_lambda: {sk_eps_lambda}\n"
         "\n"
         "  scheduler:\n"
         "    mode: {scheduler_mode}\n"
@@ -157,6 +163,11 @@ def _write_dvc_unified_config(path,
         k_alpha=args.dvc_alpha_r_k_alpha,
         alpha_r_max=args.dvc_alpha_r_alpha_r_max,
         sigma_min2=args.dvc_alpha_r_sigma_min2,
+        sk_enable=_yaml_bool(args.dvc_sk_enable),
+        sk_tau_obs=args.dvc_sk_tau_obs,
+        sk_c_obs=args.dvc_sk_c_obs,
+        sk_s_max=args.dvc_sk_s_max,
+        sk_eps_lambda=args.dvc_sk_eps_lambda,
         scheduler_mode=_yaml_quote(scheduler_mode),
         max_events=args.dvc_scheduler_max_events,
         watermark_margin_s=args.dvc_scheduler_watermark_margin_s,
@@ -464,7 +475,7 @@ def main():
     parser.add_argument("--suppress_console_output", action="store_true", help="Suppress roslaunch/analyze console output")
     parser.add_argument("--features", default="25,15,10", help="Comma-separated feature counts")
     parser.add_argument("--stage", default="baseline", help="Stage tag for manifest rows")
-    parser.add_argument("--cov_modes", default="base", help="Comma-separated covariance modes: base,fixed,alpha_r")
+    parser.add_argument("--cov_modes", default="base", help="Comma-separated covariance modes: base,fixed,alpha_r,alpha_r_sk")
     parser.add_argument("--dvc_fixed_scale", type=float, default=2.0)
     parser.add_argument("--dvc_alpha_r_w_cond", type=float, default=0.7)
     parser.add_argument("--dvc_alpha_r_w_inlier", type=float, default=1.0)
@@ -473,6 +484,11 @@ def main():
     parser.add_argument("--dvc_alpha_r_k_alpha", type=float, default=1.5)
     parser.add_argument("--dvc_alpha_r_alpha_r_max", type=float, default=5.0)
     parser.add_argument("--dvc_alpha_r_sigma_min2", type=float, default=1.0e-4)
+    parser.add_argument("--dvc_sk_enable", type=int, default=0, help="1 to enable directional S_k shaping, 0 to disable")
+    parser.add_argument("--dvc_sk_tau_obs", type=float, default=8.0)
+    parser.add_argument("--dvc_sk_c_obs", type=float, default=1.5)
+    parser.add_argument("--dvc_sk_s_max", type=float, default=3.0)
+    parser.add_argument("--dvc_sk_eps_lambda", type=float, default=1.0e-6)
     parser.add_argument("--scheduler_modes", default="legacy", help="Comma-separated scheduler modes")
     parser.add_argument("--dvc_scheduler_max_events", type=int, default=2048)
     parser.add_argument("--dvc_scheduler_watermark_margin_s", type=float, default=0.002)
@@ -506,8 +522,17 @@ def main():
     if not args.cov_modes:
         raise RuntimeError("No covariance mode provided.")
     for mode in args.cov_modes:
-        if mode not in ("base", "fixed", "alpha_r"):
+        if mode not in ("base", "fixed", "alpha_r", "alpha_r_sk"):
             raise RuntimeError("Unsupported cov mode: %s" % mode)
+    args.dvc_sk_enable = int(args.dvc_sk_enable) != 0
+    if args.dvc_sk_tau_obs <= 0.0:
+        raise RuntimeError("dvc_sk_tau_obs must be > 0.")
+    if args.dvc_sk_c_obs < 0.0:
+        raise RuntimeError("dvc_sk_c_obs must be >= 0.")
+    if args.dvc_sk_s_max < 1.0:
+        raise RuntimeError("dvc_sk_s_max must be >= 1.")
+    if args.dvc_sk_eps_lambda <= 0.0:
+        raise RuntimeError("dvc_sk_eps_lambda must be > 0.")
     args.scheduler_modes = [m.strip().lower() for m in args.scheduler_modes.split(",") if m.strip()]
     if not args.scheduler_modes:
         raise RuntimeError("No scheduler mode provided.")

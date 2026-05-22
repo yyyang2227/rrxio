@@ -18,3 +18,12 @@ nis_vel,float64,-,velocity update Mahalanobis distance,false
 nis_valid,int,-,1 if NIS corresponds to committed radar update,false
 nis_exceed_95,int,-,1 if nis_vel > chi2_3_95 and nis_valid=1,false
 radar_update_committed,int,-,1 if radar update committed in backend,false
+s_k_valid,int,-,1 if directional S_k shaping applied,false
+lambda1_obs,float64,-,largest eigenvalue of radar observability matrix,false
+lambda2_obs,float64,-,middle eigenvalue of radar observability matrix,false
+lambda3_obs,float64,-,smallest eigenvalue of radar observability matrix,false
+s1,float64,-,directional inflation factor for lambda1_obs,false
+s2,float64,-,directional inflation factor for lambda2_obs,false
+s3,float64,-,directional inflation factor for lambda3_obs,false
+trace_R_after_alpha,float64,(m/s)^2,trace after alpha_R inflation before S_k,false
+trace_R_after_sk,float64,(m/s)^2,trace after S_k directional shaping,false

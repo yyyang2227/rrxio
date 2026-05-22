@@ -6,7 +6,7 @@ dvc_diag_output_dir: ""             # Output directory for dvc_diag_<run_id>.csv
 dvc_run_id: ""                      # Unique run identifier used in diagnostics and manifests.
 
 dvc_rrxio:
-  cov_mode: "base"                  # Radar covariance mode: base | fixed | alpha_r.
+  cov_mode: "base"                  # Radar covariance mode: base | fixed | alpha_r | alpha_r_sk.
   fixed_scale: 2.0                  # Multiplicative scale used only when cov_mode=fixed.
   alpha_r:
     w_cond: 0.7                     # Weight of condition-number degradation term.
@@ -16,6 +16,12 @@ dvc_rrxio:
     k_alpha: 1.5                    # Gain from degradation score to alpha_R.
     alpha_r_max: 5.0                # Upper bound of alpha_R inflation.
     sigma_min2: 0.0001              # Minimum variance floor for SPD protection.
+  s_k:
+    enable: false                   # Enable directional S_k covariance shaping on top of alpha_R.
+    tau_obs: 8.0                    # Observability eigenvalue threshold for weak-direction inflation.
+    c_obs: 1.5                      # Gain applied to weak-direction inflation.
+    s_max: 3.0                      # Upper bound of directional inflation factor s_i.
+    eps_lambda: 0.000001            # Numerical epsilon added to U^T U before eigendecomposition.
 
   scheduler:
     mode: "legacy"                  # Scheduler mode: legacy | event_stage1 | event_stage2.

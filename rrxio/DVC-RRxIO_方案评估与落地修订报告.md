@@ -302,6 +302,23 @@
 - 结论：
   - W6 在“精度/一致性/时延/重复性”四维门禁下完成收敛，后续可进入 W7-W8。
 
+### 5.9 W7-W8（`S_k`）严格门禁状态（2026-05-22）
+- 状态：`BLOCKED`（未通过严格 Gate-W8）
+- 已实施内容：
+  - REVE 导出观测几何矩阵与特征值到 `RadarEstimationDiag`。
+  - 节点侧新增 `cov_mode=alpha_r_sk`，实现 `R_used = S_k * (alpha_R * R_reve + sigma_min2 I) * S_k^T`，并统一 SPD 投影。
+  - 新增诊断列：`s_k_valid,lambda1_obs,lambda2_obs,lambda3_obs,s1,s2,s3,trace_R_after_alpha,trace_R_after_sk`。
+  - 新增门禁与汇总脚本：`gate_w8_check.py`、`summarize_w8_results.py`。
+- 证据目录：
+  - baseline 参数：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w8_s_k_smallbatch`
+  - tuned 参数：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w8_s_k_smallbatch_tuned_c3`
+- 严格门禁结果（tuned-c3）：
+  - `rpe_p95_improve = -0.50%`（目标 `>=20%`，未达）
+  - 其余门禁项通过：`ATE/RPE` 未恶化、`runtime +5.60%`、`NIS` 改善、`committed` 不降、`radar_starved=0`
+- 结论：
+  - 当前 `S_k` 实现在本数据子集上能改善稳定性副项，但未提供目标级“退化段突跳”收益。
+  - 按规则保持 `IN_PROGRESS/BLOCKED`，不得标记 `DONE`，且不进入 W9+。
+
 ### 《边界警示》
 - 以上修正优先级遵循“先消除参数/调度不一致，再引入新统计模型”。
 - 断点 #1/#2 与 W1-W4 门禁均已完成；后续进入 W5+ 时仍需保持“单创新点分阶段消融”。
@@ -509,3 +526,15 @@ addUpdateMeas<2>(v, t_meas);
   - `python3 -m py_compile rrxio/python/evaluate_iros_datasets.py` 通过。
   - `catkin build rrxio` 通过。
   - 最小冒烟：`tmp_unified_cfg_smoke` 运行成功，已生成并生效 `dvc_params_<run_id>.yaml`。
+
+### 2026-05-22（v1.7）
+- 完成 W7-W8 代码落地与严格门禁执行：
+  - 新增 `cov_mode=alpha_r_sk` 路径、`S_k` 参数组、REVE 观测几何导出、W8 诊断列与门禁脚本。
+  - 小批目录（默认参数）：`dvc_w8_s_k_smallbatch`
+  - 小批目录（调优参数 c3）：`dvc_w8_s_k_smallbatch_tuned_c3`
+- 门禁结论：
+  - 两轮均 `FAIL`，当前最优（tuned-c3）失败项仅剩：
+    - `rpe_p95_improve=-0.50%`（目标 `>=20%`）
+  - 其余项均满足：`ATE/RPE` 未恶化、`runtime +5.60%`、`NIS` 改善、`committed` 不降、`radar_starved=0`。
+- 状态变更：
+  - W7-W8 保持 `IN_PROGRESS/BLOCKED`，不得标记 `DONE`，不进入 W9+。

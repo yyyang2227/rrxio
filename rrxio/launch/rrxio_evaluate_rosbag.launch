@@ -39,6 +39,11 @@
     <arg name="dvc_alpha_r_k_alpha" default="1.5"/>
     <arg name="dvc_alpha_r_alpha_r_max" default="5.0"/>
     <arg name="dvc_alpha_r_sigma_min2" default="0.0001"/>
+    <arg name="dvc_sk_enable" default="False"/>
+    <arg name="dvc_sk_tau_obs" default="8.0"/>
+    <arg name="dvc_sk_c_obs" default="1.5"/>
+    <arg name="dvc_sk_s_max" default="3.0"/>
+    <arg name="dvc_sk_eps_lambda" default="0.000001"/>
     <arg name="dvc_scheduler_mode" default="legacy"/>
     <arg name="dvc_scheduler_max_events" default="2048"/>
     <arg name="dvc_scheduler_watermark_margin_s" default="0.002"/>
@@ -70,38 +75,6 @@
 
         <param name="topic_radar_trigger" value="$(arg topic_radar_trigger)"/>
         <param name="topic_radar_scan" value="$(arg topic_radar_scan)"/>
-        <param name="dvc_diag_enabled" type="bool" value="$(arg dvc_diag_enabled)"/>
-        <param name="dvc_diag_output_dir" type="str" value="$(arg dvc_diag_output_dir)"/>
-        <param name="dvc_run_id" type="str" value="$(arg dvc_run_id)"/>
-        <param name="dvc_rrxio/cov_mode" type="str" value="$(arg dvc_cov_mode)"/>
-        <param name="dvc_rrxio/fixed_scale" value="$(arg dvc_fixed_scale)"/>
-        <param name="dvc_rrxio/alpha_r/w_cond" value="$(arg dvc_alpha_r_w_cond)"/>
-        <param name="dvc_rrxio/alpha_r/w_inlier" value="$(arg dvc_alpha_r_w_inlier)"/>
-        <param name="dvc_rrxio/alpha_r/w_sparse" value="$(arg dvc_alpha_r_w_sparse)"/>
-        <param name="dvc_rrxio/alpha_r/n_targets_ref" value="$(arg dvc_alpha_r_n_targets_ref)"/>
-        <param name="dvc_rrxio/alpha_r/k_alpha" value="$(arg dvc_alpha_r_k_alpha)"/>
-        <param name="dvc_rrxio/alpha_r/alpha_r_max" value="$(arg dvc_alpha_r_alpha_r_max)"/>
-        <param name="dvc_rrxio/alpha_r/sigma_min2" value="$(arg dvc_alpha_r_sigma_min2)"/>
-        <param name="dvc_rrxio/scheduler/mode" type="str" value="$(arg dvc_scheduler_mode)"/>
-        <param name="dvc_rrxio/scheduler/max_events" value="$(arg dvc_scheduler_max_events)"/>
-        <param name="dvc_rrxio/scheduler/watermark_margin_s" value="$(arg dvc_scheduler_watermark_margin_s)"/>
-        <param name="dvc_rrxio/scheduler/watermark_max_wait_s" value="$(arg dvc_scheduler_watermark_max_wait_s)"/>
-        <param name="dvc_rrxio/scheduler/radar_imu_window_s" value="$(arg dvc_scheduler_radar_imu_window_s)"/>
-        <param name="dvc_rrxio/scheduler/enable_diag" type="bool" value="$(arg dvc_scheduler_enable_diag)"/>
-        <param name="dvc_rrxio/scheduler/diag_output_dir" type="str" value="$(arg dvc_scheduler_diag_output_dir)"/>
-        <param name="dvc_rrxio/scheduler/imu_fast_path" type="bool" value="$(arg dvc_scheduler_imu_fast_path)"/>
-        <param name="dvc_rrxio/scheduler/backpressure_high" value="$(arg dvc_scheduler_backpressure_high)"/>
-        <param name="dvc_rrxio/scheduler/backpressure_low" value="$(arg dvc_scheduler_backpressure_low)"/>
-        <param name="dvc_rrxio/perf_mode" type="str" value="$(arg dvc_perf_mode)"/>
-        <param name="dvc_rrxio/perf/pub_decimation" value="$(arg dvc_perf_pub_decimation)"/>
-        <param name="dvc_rrxio/perf/tf_decimation" value="$(arg dvc_perf_tf_decimation)"/>
-        <param name="dvc_rrxio/perf/diag_flush_every_n" value="$(arg dvc_perf_diag_flush_every_n)"/>
-        <param name="scheduler_backpressure_depth" value="$(arg dvc_scheduler_backpressure_depth)"/>
-        <param name="scheduler_backpressure_high" value="$(arg dvc_scheduler_backpressure_high)"/>
-        <param name="scheduler_backpressure_low" value="$(arg dvc_scheduler_backpressure_low)"/>
-        <param name="scheduler_backpressure_timeout_s" value="$(arg dvc_scheduler_backpressure_timeout_s)"/>
-        <param name="scheduler_drain_timeout_s" value="$(arg dvc_scheduler_drain_timeout_s)"/>
-
         <rosparam file="$(find rrxio)/launch/configs/default_params_radar_ego_velocity_estimation.yaml" command="load"/>
         <rosparam file="$(arg radar_calib)" command="load"/>
         <rosparam file="$(arg dvc_unified_config)" command="load"/>

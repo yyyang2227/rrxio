@@ -30,7 +30,7 @@
 | W1-W2 | DONE | 基线冻结与复现 | 固化评估链路；运行 `freeze_baseline_snapshot.py` 输出快照 | 视觉/热成像基线各重复3次 | `baseline_v1/` 结果包+快照 | 关键指标波动在可接受范围 |
 | W3-W4 | DONE | 诊断链最小闭环 | 在 `RRxIONode` 与 REVE 链路增补 `cond/inlier_ratio/traceR/minEigR/update_used` 输出 | 校验诊断值随场景变化趋势 | `dvc_diag.csv` + 诊断图 | 每帧可追踪、无缺列 |
 | W5-W6 | DONE | Contribution-1（已完成） | 接入 `alpha_R` 各向同性重标定（保持低侵入） + NIS 诊断闭环 + 调度确定性修正 | 全量对比 `base/fixed/alpha_r`（9序列×2模态×3次） | `w6_metrics.csv`+`w6_summary.md`+对比图+Gate报告 | Gate-W6 与 Scheduler 严格门禁双 PASS |
-| W7-W8 | TODO | Contribution-2 | 接入 `S_k` 方向性塑形 + SPD保护 | 几何退化专项实验 | 退化证据图 | 退化段突跳减少 |
+| W7-W8 | BLOCKED | Contribution-2 | 接入 `S_k` 方向性塑形 + SPD保护 | 几何退化专项实验 | 退化证据图 | 严格 Gate-W8 通过（当前未通过） |
 | W9-W10 | TODO | Contribution-3 | 接入 `alpha_NIS` 与 `zeta_RV`，明确更新接受/拒绝日志 | 双退化实验（视觉差+雷达差） | 完整 DVC 主链 | `alpha_NIS` 不长期饱和 |
 | W11-W12 | TODO | 完整消融矩阵 | 统一实验配置与导出格式 | 全基线+全消融批量跑 | 消融总表+图集 | 每个主张有对应证据 |
 | W13-W14 | TODO | 鲁棒性与失败模式 | 失败路径注入与可观测性增强 | 同步偏差/外参偏差/低纹理等实验 | 失败模式章节素材 | 失败路径可复现并可解释 |
@@ -141,6 +141,33 @@ Gate-W6 关键指标（alpha_r vs base）：
 收敛结论：
 - W6 阶段“时延长尾 + ATE/RPE + repeatability”已在同一硬门禁下同时闭环。
 - W5-W6 阶段状态可标记为 `DONE`，允许推进 W7-W8。
+
+## 4.6 W7-W8 实施与门禁状态（2026-05-22）
+门禁脚本：`rrxio/python/gate_w8_check.py`（严格阈值：`rpe_p95_improve>=20%`）
+
+已完成实现资产：
+- REVE 导出观测几何（`U^T U` 与特征值）到 `RadarEstimationDiag`。
+- `RRxIONode` 新增 `cov_mode=alpha_r_sk` 路径：`alpha_R` 后执行 `S_k*R*S_k^T`，并统一 SPD 投影。
+- 统一配置新增 `dvc_rrxio/s_k/*`，评测脚本支持 `alpha_r_sk` 批量运行。
+- 新增 `summarize_w8_results.py`、`gate_w8_check.py` 与 `dvc_diag` 的 `S_k` 诊断列。
+
+小批门禁记录（`4序列×2模态×alpha_r/alpha_r_sk×3次`）：
+| 批次 | 结果目录 | 参数 | Gate | 关键结果 |
+|---|---|---|---|---|
+| W8-baseline | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w8_s_k_smallbatch` | `tau=8.0,c=1.5,s_max=3.0` | FAIL | `rpe_p95_improve=-10.42%`，`RPE degrade=+7.94%` |
+| W8-tuned-c3 | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w8_s_k_smallbatch_tuned_c3` | `tau=8.0,c=0.5,s_max=2.0` | FAIL | `rpe_p95_improve=-0.50%`（显著改善但未达 `>=20%`） |
+
+W8-tuned-c3 其余硬门禁（均通过）：
+- `ATE degrade=-7.21%`（改善）
+- `RPE degrade=-1.27%`（改善）
+- `runtime increase=+5.60%`（<=15%）
+- `NIS abs increase=-0.547pp`（<=1pp）
+- `committed_drop=-1.60%`（更新次数上升）
+- `radar_starved=0`
+
+阶段结论：
+- W7-W8 已完成代码落地与多轮实测，但严格 Gate-W8 仍未通过。
+- 当前状态必须保持 `BLOCKED`，不得标注 `DONE`。
 
 ## 5. 目录与命名规范（统一结果资产）
 建议根目录：`<dataset_root>/results/dvc_rrxio_publish/`

@@ -238,6 +238,14 @@
   - `committed_drop=0.436%`
   - `repeatability=PASS`，`radar_starved=0`
 
+7. W7-W8（`S_k`）严格门禁状态（2026-05-22）：
+- 已完成：`alpha_r_sk` 协方差链路、REVE 观测几何导出、W8 诊断列与 Gate 脚本。
+- 小批结果（默认参数）：`dvc_w8_s_k_smallbatch`，`Gate-W8=FAIL`。
+- 小批结果（调优参数）：`dvc_w8_s_k_smallbatch_tuned_c3`，`Gate-W8=FAIL`。
+- 当前最优失败项仅剩：`rpe_p95_improve=-0.50%`（目标 `>=20%` 未达）。
+- 其余约束通过：`ATE/RPE` 未恶化、`runtime +5.60%`、`NIS` 改善、`committed` 不降、`radar_starved=0`。
+- 结论：W7-W8 状态必须保持 `BLOCKED`，不得标注 `DONE`。
+
 ---
 
 ## 9. 维护约定（后续代码改动时同步更新）
@@ -300,3 +308,8 @@
   - `evaluate_iros_datasets.py` 改为按 run 生成 `dvc_param_configs/dvc_params_<run_id>.yaml` 并注入 launch。
   - `run_manifest.csv` 新增 `dvc_unified_config_file` 字段，实现参数输入的单源可追溯。
   - 验证：`py_compile` 与 `catkin build rrxio` 均通过，最小冒烟运行成功。
+- 2026-05-22（W7-W8 实施与门禁）：
+  - 代码：新增 `alpha_r_sk` 与 `S_k` 路径、REVE 观测几何导出、W8 诊断与门禁脚本（`summarize_w8_results.py`、`gate_w8_check.py`）。
+  - 脚本稳健性：`summarize_w8_results.py` / `gate_w8_check.py` 增加 `stage_filter`，避免多轮结果混入误判。
+  - 实验：`dvc_w8_s_k_smallbatch` 与 `dvc_w8_s_k_smallbatch_tuned_c3` 两轮 `4序列×2模态×2模式×3次` 门禁均未通过。
+  - 当前最优：`rpe_p95_improve=-0.50%`（未达 `>=20%`）；W7-W8 状态保持 `BLOCKED`。
