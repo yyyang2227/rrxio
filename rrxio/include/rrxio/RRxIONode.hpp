@@ -216,6 +216,15 @@ public:
     bool enable_diag             = false;
     bool diag_log_all_events     = false;
     std::string diag_output_dir;
+    bool imu_fast_path = true;
+  };
+
+  struct PerfConfig
+  {
+    std::string mode = "normal";
+    int pub_decimation = 1;
+    int tf_decimation = 1;
+    int diag_flush_every_n = 1;
   };
 
   struct EventQueueStats
@@ -234,6 +243,11 @@ public:
     double timestamp = 0.0;
     uint64_t seq = 0;
     double enqueue_wall_time = 0.0;
+    double loader_backpressure_wait_ms = std::numeric_limits<double>::quiet_NaN();
+    std::string loader_backpressure_reason = "none";
+    uint64_t loader_backpressure_queue_depth = 0;
+    uint64_t loader_backpressure_imu_depth = 0;
+    int loader_backpressure_timeout = 0;
 
     sensor_msgs::Imu::ConstPtr imu_msg;
     sensor_msgs::ImageConstPtr img_msg;
@@ -247,16 +261,20 @@ public:
   };
 
   SchedulerConfig scheduler_cfg_;
+  PerfConfig perf_cfg_;
   SchedulerMode scheduler_mode_ = SchedulerMode::Legacy;
   std::thread estimator_worker_;
   std::mutex scheduler_mutex_;
   std::condition_variable scheduler_cv_;
   std::deque<SensorEvent> event_queue_;
+  std::deque<sensor_msgs::Imu::ConstPtr> imu_fast_queue_;
   std::atomic<bool> worker_running_{ false };
   std::atomic<bool> worker_processing_{ false };
+  std::atomic<bool> scheduler_drain_requested_{ false };
   std::thread::id worker_thread_id_;
   uint64_t event_seq_ = 0;
   double latest_imu_time_ = -std::numeric_limits<double>::infinity();
+  double oldest_pending_radar_timestamp_ = std::numeric_limits<double>::infinity();
   EventQueueStats event_queue_stats_;
   std::map<uint64_t, double> watermark_block_start_sec_;
   std::deque<sensor_msgs::Imu> imu_history_;
@@ -267,6 +285,19 @@ public:
   double last_radar_enqueue_to_commit_ms_ = std::numeric_limits<double>::quiet_NaN();
   int last_radar_starved_ = 0;
   std::string last_drop_type_ = "none";
+  double current_mfilter_lock_wait_us_ = 0.0;
+  double current_mfilter_lock_hold_us_ = 0.0;
+  double last_reve_ms_ = std::numeric_limits<double>::quiet_NaN();
+  double last_backend_ms_ = std::numeric_limits<double>::quiet_NaN();
+  double last_publish_ms_ = std::numeric_limits<double>::quiet_NaN();
+  double last_diag_io_ms_ = std::numeric_limits<double>::quiet_NaN();
+  bool loader_backpressure_pending_ = false;
+  double pending_loader_backpressure_wait_ms_ = std::numeric_limits<double>::quiet_NaN();
+  std::string pending_loader_backpressure_reason_ = "none";
+  uint64_t pending_loader_backpressure_queue_depth_ = 0;
+  uint64_t pending_loader_backpressure_imu_depth_ = 0;
+  int pending_loader_backpressure_timeout_ = 0;
+  uint64_t publish_cycle_count_ = 0;
 
   // Nodes, Subscriber, Publishers
   ros::NodeHandle nh_;
@@ -395,6 +426,12 @@ public:
                       scheduler_cfg_.diag_log_all_events);
     nh_private_.param(
         "dvc_rrxio/scheduler/diag_output_dir", scheduler_cfg_.diag_output_dir, scheduler_cfg_.diag_output_dir);
+    nh_private_.param("dvc_rrxio/scheduler/imu_fast_path", scheduler_cfg_.imu_fast_path, scheduler_cfg_.imu_fast_path);
+    nh_private_.param("dvc_rrxio/perf_mode", perf_cfg_.mode, perf_cfg_.mode);
+    nh_private_.param("dvc_rrxio/perf/pub_decimation", perf_cfg_.pub_decimation, perf_cfg_.pub_decimation);
+    nh_private_.param("dvc_rrxio/perf/tf_decimation", perf_cfg_.tf_decimation, perf_cfg_.tf_decimation);
+    nh_private_.param(
+        "dvc_rrxio/perf/diag_flush_every_n", perf_cfg_.diag_flush_every_n, perf_cfg_.diag_flush_every_n);
     nh_private_.param("dvc_rrxio/cov_mode", radar_cov_recalib_cfg_.cov_mode, radar_cov_recalib_cfg_.cov_mode);
     nh_private_.param("dvc_rrxio/fixed_scale", radar_cov_recalib_cfg_.fixed_scale, radar_cov_recalib_cfg_.fixed_scale);
     nh_private_.param("dvc_rrxio/alpha_r/w_cond", radar_cov_recalib_cfg_.w_cond, radar_cov_recalib_cfg_.w_cond);
@@ -415,6 +452,10 @@ public:
     std::transform(scheduler_cfg_.mode.begin(),
                    scheduler_cfg_.mode.end(),
                    scheduler_cfg_.mode.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::transform(perf_cfg_.mode.begin(),
+                   perf_cfg_.mode.end(),
+                   perf_cfg_.mode.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
     if (scheduler_cfg_.mode == "legacy")
@@ -463,6 +504,16 @@ public:
       throw std::runtime_error("dvc_rrxio/scheduler/watermark_max_wait_s must be > 0.");
     if (scheduler_cfg_.radar_imu_window_s <= 0.0)
       throw std::runtime_error("dvc_rrxio/scheduler/radar_imu_window_s must be > 0.");
+    if (perf_cfg_.mode != "normal" && perf_cfg_.mode != "perf")
+      throw std::runtime_error("dvc_rrxio/perf_mode must be normal or perf.");
+    if (perf_cfg_.pub_decimation <= 0)
+      throw std::runtime_error("dvc_rrxio/perf/pub_decimation must be > 0.");
+    if (perf_cfg_.tf_decimation <= 0)
+      throw std::runtime_error("dvc_rrxio/perf/tf_decimation must be > 0.");
+    if (perf_cfg_.diag_flush_every_n <= 0)
+      throw std::runtime_error("dvc_rrxio/perf/diag_flush_every_n must be > 0.");
+    if (scheduler_mode_ != SchedulerMode::EventStage2)
+      scheduler_cfg_.imu_fast_path = false;
     initDvcDiagLogging();
 
     subImu_                 = nh_.subscribe(topic_imu, 2000, &RovioNode::imuCallback, this);
@@ -652,7 +703,8 @@ public:
       estimator_worker_ = std::thread(&RovioNode::estimatorWorkerLoop, this);
       ROS_INFO_STREAM("[scheduler] enabled mode=" << scheduler_cfg_.mode << ", max_events=" << scheduler_cfg_.max_events
                                                   << ", watermark_margin_s=" << scheduler_cfg_.watermark_margin_s
-                                                  << ", watermark_max_wait_s=" << scheduler_cfg_.watermark_max_wait_s);
+                                                  << ", watermark_max_wait_s=" << scheduler_cfg_.watermark_max_wait_s
+                                                  << ", imu_fast_path=" << scheduler_cfg_.imu_fast_path);
     }
   }
 
@@ -705,6 +757,15 @@ public:
   static double clampScalar(const double value, const double low, const double high)
   {
     return std::max(low, std::min(high, value));
+  }
+
+  bool isPerfMode() const { return perf_cfg_.mode == "perf"; }
+
+  bool shouldRunOnCycle(const int decimation) const
+  {
+    if (decimation <= 1)
+      return true;
+    return (publish_cycle_count_ % static_cast<uint64_t>(decimation)) == 0;
   }
 
   bool regularizeCovariance(Eigen::Matrix3d& cov, const double min_eigenvalue_floor) const
@@ -862,45 +923,87 @@ public:
 
   bool isEventMode() const { return scheduler_mode_ != SchedulerMode::Legacy; }
   bool isWorkerThread() const { return isEventMode() && std::this_thread::get_id() == worker_thread_id_; }
+  bool isImuFastPathEnabled() const { return scheduler_mode_ == SchedulerMode::EventStage2 && scheduler_cfg_.imu_fast_path; }
   size_t getSchedulerQueueDepth()
   {
     std::lock_guard<std::mutex> lock(scheduler_mutex_);
     return event_queue_.size();
   }
+  size_t getImuFastQueueDepth()
+  {
+    std::lock_guard<std::mutex> lock(scheduler_mutex_);
+    return imu_fast_queue_.size();
+  }
   size_t getSchedulerMaxEvents() const { return static_cast<size_t>(scheduler_cfg_.max_events); }
+  void noteLoaderBackpressureWait(const double wait_ms,
+                                  const std::string& reason,
+                                  const size_t queue_depth,
+                                  const size_t imu_fast_depth,
+                                  const bool timed_out)
+  {
+    if (!isEventMode() || !std::isfinite(wait_ms) || wait_ms < 0.0)
+      return;
+    std::lock_guard<std::mutex> lock(scheduler_mutex_);
+    loader_backpressure_pending_ = true;
+    pending_loader_backpressure_wait_ms_ = wait_ms;
+    pending_loader_backpressure_reason_ = reason.empty() ? "none" : reason;
+    pending_loader_backpressure_queue_depth_ = static_cast<uint64_t>(queue_depth);
+    pending_loader_backpressure_imu_depth_ = static_cast<uint64_t>(imu_fast_depth);
+    pending_loader_backpressure_timeout_ = timed_out ? 1 : 0;
+  }
   bool waitUntilSchedulerQueueBelow(const size_t target_depth, const double timeout_s)
   {
-    const double start_wall = ros::WallTime::now().toSec();
-    while (ros::ok())
+    std::unique_lock<std::mutex> lock(scheduler_mutex_);
+    const auto pred = [&]() {
+      return !ros::ok() || event_queue_.size() <= target_depth || !worker_running_.load();
+    };
+    if (timeout_s <= 0.0)
     {
-      {
-        std::lock_guard<std::mutex> lock(scheduler_mutex_);
-        if (event_queue_.size() <= target_depth)
-          return true;
-      }
-      if (timeout_s > 0.0 && (ros::WallTime::now().toSec() - start_wall) > timeout_s)
-        return false;
-      ros::WallDuration(0.001).sleep();
+      scheduler_cv_.wait(lock, pred);
+      return event_queue_.size() <= target_depth;
     }
-    return false;
+    const bool ok = scheduler_cv_.wait_for(lock, std::chrono::duration<double>(timeout_s), pred);
+    return ok && event_queue_.size() <= target_depth;
+  }
+  bool waitUntilImuFastQueueBelow(const size_t target_depth, const double timeout_s)
+  {
+    std::unique_lock<std::mutex> lock(scheduler_mutex_);
+    const auto pred = [&]() {
+      return !ros::ok() || imu_fast_queue_.size() <= target_depth || !worker_running_.load();
+    };
+    if (timeout_s <= 0.0)
+    {
+      scheduler_cv_.wait(lock, pred);
+      return imu_fast_queue_.size() <= target_depth;
+    }
+    const bool ok = scheduler_cv_.wait_for(lock, std::chrono::duration<double>(timeout_s), pred);
+    return ok && imu_fast_queue_.size() <= target_depth;
   }
   bool waitUntilSchedulerDrained(const double timeout_s)
   {
-    const double start_wall = ros::WallTime::now().toSec();
-    while (ros::ok())
+    scheduler_drain_requested_.store(true);
+    scheduler_cv_.notify_all();
+
+    std::unique_lock<std::mutex> lock(scheduler_mutex_);
+    const auto pred = [&]() {
+      return !ros::ok() || ((!worker_running_.load() || scheduler_mode_ == SchedulerMode::Legacy) && event_queue_.empty()) ||
+             (event_queue_.empty() && !worker_processing_.load());
+    };
+
+    bool ok = false;
+    if (timeout_s <= 0.0)
     {
-      bool empty = false;
-      {
-        std::lock_guard<std::mutex> lock(scheduler_mutex_);
-        empty = event_queue_.empty();
-      }
-      if (empty && !worker_processing_.load())
-        return true;
-      if (timeout_s > 0.0 && (ros::WallTime::now().toSec() - start_wall) > timeout_s)
-        return false;
-      ros::WallDuration(0.001).sleep();
+      scheduler_cv_.wait(lock, pred);
+      ok = event_queue_.empty() && !worker_processing_.load();
     }
-    return false;
+    else
+    {
+      ok = scheduler_cv_.wait_for(lock, std::chrono::duration<double>(timeout_s), pred) && event_queue_.empty() &&
+           !worker_processing_.load();
+    }
+
+    scheduler_drain_requested_.store(false);
+    return ok;
   }
 
   int eventPriority(const EventType type) const
@@ -994,7 +1097,11 @@ public:
     dvc_sched_diag_stream_
         << "row_id,event_timestamp,event_enqueue_wall_time,event_process_wall_time,scheduler_mode,event_type,"
         << "queue_depth,event_latency_ms,watermark_wait_ms,drop_total,drop_type,lock_wait_us,lock_hold_us,"
-        << "radar_enqueue_to_commit_ms,radar_starved\n";
+        << "radar_enqueue_to_commit_ms,radar_starved,queue_wait_us,select_ready_us,worker_dispatch_us,"
+        << "mfilter_lock_wait_us,mfilter_lock_hold_us,reve_ms,backend_ms,publish_ms,diag_io_ms,"
+        << "loader_backpressure_wait_ms,loader_backpressure_reason,loader_backpressure_queue_depth,"
+        << "loader_backpressure_imu_depth,loader_backpressure_timeout,event_queue_wait_ms,worker_dispatch_ms,"
+        << "update_publish_ms,diag_write_ms\n";
     dvc_sched_diag_stream_.flush();
   }
 
@@ -1006,6 +1113,14 @@ public:
                              const double lock_hold_us,
                              const double radar_enqueue_to_commit_ms,
                              const int radar_starved,
+                             const double queue_wait_us = std::numeric_limits<double>::quiet_NaN(),
+                             const double select_ready_us = std::numeric_limits<double>::quiet_NaN(),
+                             const double worker_dispatch_us = std::numeric_limits<double>::quiet_NaN(),
+                             const double mfilter_lock_wait_us = std::numeric_limits<double>::quiet_NaN(),
+                             const double mfilter_lock_hold_us = std::numeric_limits<double>::quiet_NaN(),
+                             const double reve_ms = std::numeric_limits<double>::quiet_NaN(),
+                             const double backend_ms = std::numeric_limits<double>::quiet_NaN(),
+                             const double publish_ms = std::numeric_limits<double>::quiet_NaN(),
                              const bool force_log = false)
   {
     if (!scheduler_cfg_.enable_diag || !dvc_sched_diag_stream_.good())
@@ -1016,13 +1131,36 @@ public:
       return;
     }
 
+    const double event_queue_wait_ms =
+        std::isfinite(queue_wait_us) ? (queue_wait_us * 1.0e-3) : std::numeric_limits<double>::quiet_NaN();
+    const double worker_dispatch_ms =
+        std::isfinite(worker_dispatch_us) ? (worker_dispatch_us * 1.0e-3) : std::numeric_limits<double>::quiet_NaN();
+    const double update_publish_ms =
+        (std::isfinite(backend_ms) && std::isfinite(publish_ms)) ? (backend_ms + publish_ms) : std::numeric_limits<double>::quiet_NaN();
+    const double diag_write_ms = last_diag_io_ms_;
+
+    const double t_diag_write_begin = ros::WallTime::now().toSec();
     dvc_sched_diag_stream_ << dvc_sched_diag_rows_++ << "," << std::fixed << std::setprecision(9) << event.timestamp
                            << "," << event.enqueue_wall_time << "," << ros::WallTime::now().toSec() << ","
                            << scheduler_cfg_.mode << "," << eventTypeName(event.type) << "," << queue_depth << ","
                            << event_latency_ms << "," << watermark_wait_ms << "," << event_queue_stats_.dropped_total
                            << "," << last_drop_type_ << "," << lock_wait_us << "," << lock_hold_us << ","
-                           << radar_enqueue_to_commit_ms << "," << radar_starved << "\n";
-    dvc_sched_diag_stream_.flush();
+                           << radar_enqueue_to_commit_ms << "," << radar_starved << "," << queue_wait_us << ","
+                           << select_ready_us << "," << worker_dispatch_us << "," << mfilter_lock_wait_us << ","
+                           << mfilter_lock_hold_us << "," << reve_ms << "," << backend_ms << "," << publish_ms << ","
+                           << last_diag_io_ms_ << "," << event.loader_backpressure_wait_ms << ","
+                           << event.loader_backpressure_reason << "," << event.loader_backpressure_queue_depth << ","
+                           << event.loader_backpressure_imu_depth << "," << event.loader_backpressure_timeout << ","
+                           << event_queue_wait_ms << "," << worker_dispatch_ms << "," << update_publish_ms << ","
+                           << diag_write_ms << "\n";
+
+    if (!isPerfMode() || (dvc_sched_diag_rows_ % static_cast<uint64_t>(std::max(1, perf_cfg_.diag_flush_every_n))) == 0 ||
+        force_log)
+    {
+      dvc_sched_diag_stream_.flush();
+    }
+    const double t_diag_write_end = ros::WallTime::now().toSec();
+    last_diag_io_ms_ = std::max(0.0, (t_diag_write_end - t_diag_write_begin) * 1000.0);
   }
 
   void enqueueEvent(SensorEvent event)
@@ -1034,47 +1172,94 @@ public:
       std::lock_guard<std::mutex> lock(scheduler_mutex_);
       event.seq               = ++event_seq_;
       event.enqueue_wall_time = ros::WallTime::now().toSec();
+      if (loader_backpressure_pending_ && event.type != EventType::Imu)
+      {
+        event.loader_backpressure_wait_ms = pending_loader_backpressure_wait_ms_;
+        event.loader_backpressure_reason = pending_loader_backpressure_reason_;
+        event.loader_backpressure_queue_depth = pending_loader_backpressure_queue_depth_;
+        event.loader_backpressure_imu_depth = pending_loader_backpressure_imu_depth_;
+        event.loader_backpressure_timeout = pending_loader_backpressure_timeout_;
+        loader_backpressure_pending_ = false;
+      }
 
       if (event_queue_.size() >= static_cast<size_t>(scheduler_cfg_.max_events))
       {
         const SensorEvent dropped = event_queue_.front();
         event_queue_.pop_front();
         watermark_block_start_sec_.erase(dropped.seq);
+        if (dropped.type == EventType::RadarScan &&
+            std::fabs(dropped.timestamp - oldest_pending_radar_timestamp_) < 1.0e-9)
+        {
+          recomputeOldestPendingRadarTimestampUnlocked();
+        }
         event_queue_stats_.dropped_total++;
         event_queue_stats_.dropped_by_type[dropped.type]++;
         last_drop_type_ = eventTypeName(dropped.type);
       }
 
       event_queue_.push_back(event);
+      if (event.type == EventType::RadarScan)
+      {
+        oldest_pending_radar_timestamp_ = std::min(oldest_pending_radar_timestamp_, event.timestamp);
+      }
       event_queue_stats_.enqueued++;
     }
-    scheduler_cv_.notify_one();
+    scheduler_cv_.notify_all();
+  }
+
+  void recomputeOldestPendingRadarTimestampUnlocked()
+  {
+    oldest_pending_radar_timestamp_ = std::numeric_limits<double>::infinity();
+    for (const auto& pending : event_queue_)
+    {
+      if (pending.type == EventType::RadarScan)
+      {
+        oldest_pending_radar_timestamp_ = std::min(oldest_pending_radar_timestamp_, pending.timestamp);
+      }
+    }
   }
 
   bool isEventEligible(const SensorEvent& event) const
   {
     if (event.type == EventType::Imu || event.type == EventType::Reset || event.type == EventType::ResetToPose)
       return true;
+    if (scheduler_mode_ == SchedulerMode::EventStage2 && scheduler_cfg_.imu_fast_path &&
+        event.type == EventType::RadarScan)
+    {
+      const double required_imu_horizon = std::max(scheduler_cfg_.watermark_margin_s, scheduler_cfg_.radar_imu_window_s);
+      return latest_imu_time_ >= event.timestamp + required_imu_horizon;
+    }
     return latest_imu_time_ >= event.timestamp + scheduler_cfg_.watermark_margin_s;
   }
 
-  bool popNextReadyEvent(SensorEvent& event, double& watermark_wait_ms, size_t& queue_depth_after_pop)
+  bool popNextReadyEvent(SensorEvent& event,
+                         double& watermark_wait_ms,
+                         size_t& queue_depth_after_pop,
+                         double& queue_wait_us,
+                         double& select_ready_us)
   {
+    queue_wait_us = 0.0;
+    select_ready_us = 0.0;
     std::unique_lock<std::mutex> lock(scheduler_mutex_);
     while (worker_running_.load())
     {
       if (event_queue_.empty())
       {
-        scheduler_cv_.wait_for(lock, std::chrono::milliseconds(10));
+        const auto t_wait_begin = ros::WallTime::now().toSec();
+        scheduler_cv_.wait(lock, [&]() { return !worker_running_.load() || !event_queue_.empty(); });
+        const auto t_wait_end = ros::WallTime::now().toSec();
+        queue_wait_us += std::max(0.0, (t_wait_end - t_wait_begin) * 1.0e6);
         continue;
       }
 
+      const auto t_select_begin = ros::WallTime::now().toSec();
       size_t best_idx      = event_queue_.size();
       double best_ts       = std::numeric_limits<double>::infinity();
       int best_priority    = std::numeric_limits<int>::max();
       uint64_t best_seq    = std::numeric_limits<uint64_t>::max();
       bool any_waiting_non_imu = false;
       const double now_wall = ros::WallTime::now().toSec();
+      double longest_wait_s = 0.0;
 
       for (size_t i = 0; i < event_queue_.size(); ++i)
       {
@@ -1087,6 +1272,13 @@ public:
             if (watermark_block_start_sec_.find(candidate.seq) == watermark_block_start_sec_.end())
             {
               watermark_block_start_sec_[candidate.seq] = now_wall;
+            }
+            const auto it_block = watermark_block_start_sec_.find(candidate.seq);
+            if (it_block != watermark_block_start_sec_.end())
+            {
+              const double wait_s = now_wall - it_block->second;
+              if (wait_s > longest_wait_s)
+                longest_wait_s = wait_s;
             }
           }
           continue;
@@ -1102,6 +1294,8 @@ public:
           best_seq      = candidate.seq;
         }
       }
+      const auto t_select_end = ros::WallTime::now().toSec();
+      select_ready_us += std::max(0.0, (t_select_end - t_select_begin) * 1.0e6);
 
       if (best_idx == event_queue_.size())
       {
@@ -1109,7 +1303,6 @@ public:
         {
           event_queue_stats_.watermark_block_count++;
           size_t drop_idx = event_queue_.size();
-          double longest_wait_s = 0.0;
           for (size_t i = 0; i < event_queue_.size(); ++i)
           {
             const SensorEvent& candidate = event_queue_[i];
@@ -1132,6 +1325,11 @@ public:
             const SensorEvent dropped = event_queue_[drop_idx];
             event_queue_.erase(event_queue_.begin() + drop_idx);
             watermark_block_start_sec_.erase(dropped.seq);
+            if (dropped.type == EventType::RadarScan &&
+                std::fabs(dropped.timestamp - oldest_pending_radar_timestamp_) < 1.0e-9)
+            {
+              recomputeOldestPendingRadarTimestampUnlocked();
+            }
             event_queue_stats_.dropped_total++;
             event_queue_stats_.dropped_by_type[dropped.type]++;
             last_drop_type_ = eventTypeName(dropped.type);
@@ -1145,16 +1343,38 @@ public:
                                   0.0,
                                   std::numeric_limits<double>::quiet_NaN(),
                                   0,
+                                  queue_wait_us,
+                                  select_ready_us,
+                                  std::numeric_limits<double>::quiet_NaN(),
+                                  std::numeric_limits<double>::quiet_NaN(),
+                                  std::numeric_limits<double>::quiet_NaN(),
+                                  std::numeric_limits<double>::quiet_NaN(),
+                                  std::numeric_limits<double>::quiet_NaN(),
+                                  std::numeric_limits<double>::quiet_NaN(),
                                   true);
             continue;
           }
         }
-        scheduler_cv_.wait_for(lock, std::chrono::milliseconds(2));
+        const double remaining_wait_s = std::max(0.001, scheduler_cfg_.watermark_max_wait_s - longest_wait_s);
+        const uint64_t enqueued_before_wait = event_queue_stats_.enqueued;
+        const double latest_imu_before_wait = latest_imu_time_;
+        const auto t_wait_begin = ros::WallTime::now().toSec();
+        scheduler_cv_.wait_for(lock, std::chrono::duration<double>(remaining_wait_s), [&]() {
+          return !worker_running_.load() || scheduler_drain_requested_.load() || event_queue_.empty() ||
+                 event_queue_stats_.enqueued != enqueued_before_wait || latest_imu_time_ > latest_imu_before_wait;
+        });
+        const auto t_wait_end = ros::WallTime::now().toSec();
+        queue_wait_us += std::max(0.0, (t_wait_end - t_wait_begin) * 1.0e6);
         continue;
       }
 
       event = event_queue_[best_idx];
       event_queue_.erase(event_queue_.begin() + best_idx);
+      if (event.type == EventType::RadarScan &&
+          std::fabs(event.timestamp - oldest_pending_radar_timestamp_) < 1.0e-9)
+      {
+        recomputeOldestPendingRadarTimestampUnlocked();
+      }
       queue_depth_after_pop = event_queue_.size();
       watermark_wait_ms = 0.0;
       const auto it_block = watermark_block_start_sec_.find(event.seq);
@@ -1163,6 +1383,7 @@ public:
         watermark_wait_ms = std::max(0.0, (ros::WallTime::now().toSec() - it_block->second) * 1000.0);
         watermark_block_start_sec_.erase(it_block);
       }
+      scheduler_cv_.notify_all();
       return true;
     }
     return false;
@@ -1173,6 +1394,7 @@ public:
     omega_mean.setZero();
     size_t count = 0;
     const double end_time = scan_timestamp + scheduler_cfg_.radar_imu_window_s;
+    std::lock_guard<std::mutex> lock(scheduler_mutex_);
     for (const auto& imu : imu_history_)
     {
       const double t = imu.header.stamp.toSec();
@@ -1188,12 +1410,40 @@ public:
     return true;
   }
 
-  void updateImuHistory(const sensor_msgs::Imu::ConstPtr& imu_msg)
+  void updateImuHistoryUnlocked(const sensor_msgs::Imu& imu_msg)
   {
-    imu_history_.push_back(*imu_msg);
-    const double cutoff = imu_msg->header.stamp.toSec() - 1.0;
+    imu_history_.push_back(imu_msg);
+    double cutoff = imu_msg.header.stamp.toSec() - 1.0;
+    if (scheduler_mode_ == SchedulerMode::EventStage2 && scheduler_cfg_.imu_fast_path &&
+        std::isfinite(oldest_pending_radar_timestamp_))
+    {
+      // Preserve IMU support for the oldest pending radar event to avoid
+      // fast-path timestamp starvation under rosbag burst playback.
+      cutoff = std::min(cutoff, oldest_pending_radar_timestamp_ - scheduler_cfg_.radar_imu_window_s);
+    }
     while (!imu_history_.empty() && imu_history_.front().header.stamp.toSec() < cutoff)
       imu_history_.pop_front();
+  }
+
+  void updateImuHistory(const sensor_msgs::Imu& imu_msg)
+  {
+    std::lock_guard<std::mutex> lock(scheduler_mutex_);
+    updateImuHistoryUnlocked(imu_msg);
+  }
+
+  void updateImuHistory(const sensor_msgs::Imu::ConstPtr& imu_msg) { updateImuHistory(*imu_msg); }
+
+  void drainImuFastQueueUpTo(const double max_timestamp, std::vector<sensor_msgs::Imu::ConstPtr>& imu_msgs)
+  {
+    imu_msgs.clear();
+    std::lock_guard<std::mutex> lock(scheduler_mutex_);
+    while (!imu_fast_queue_.empty() && imu_fast_queue_.front()->header.stamp.toSec() <= max_timestamp)
+    {
+      imu_msgs.push_back(imu_fast_queue_.front());
+      imu_fast_queue_.pop_front();
+    }
+    if (!imu_msgs.empty())
+      scheduler_cv_.notify_all();
   }
 
   void estimatorWorkerLoop()
@@ -1204,17 +1454,41 @@ public:
       SensorEvent event;
       double watermark_wait_ms = 0.0;
       size_t queue_depth_after_pop = 0;
-      if (!popNextReadyEvent(event, watermark_wait_ms, queue_depth_after_pop))
+      double queue_wait_us = 0.0;
+      double select_ready_us = 0.0;
+      if (!popNextReadyEvent(event, watermark_wait_ms, queue_depth_after_pop, queue_wait_us, select_ready_us))
         continue;
 
       const double process_start = ros::WallTime::now().toSec();
       const double event_latency_ms = (process_start - event.enqueue_wall_time) * 1000.0;
 
       worker_processing_.store(true);
+      scheduler_cv_.notify_all();
       last_radar_enqueue_to_commit_ms_ = std::numeric_limits<double>::quiet_NaN();
       last_radar_starved_              = 0;
       active_radar_enqueue_wall_time_  = std::numeric_limits<double>::quiet_NaN();
+      current_mfilter_lock_wait_us_    = 0.0;
+      current_mfilter_lock_hold_us_    = 0.0;
+      last_reve_ms_                    = std::numeric_limits<double>::quiet_NaN();
+      last_backend_ms_                 = std::numeric_limits<double>::quiet_NaN();
+      last_publish_ms_                 = std::numeric_limits<double>::quiet_NaN();
 
+      if (scheduler_cfg_.imu_fast_path && event.type != EventType::Imu)
+      {
+        std::vector<sensor_msgs::Imu::ConstPtr> imu_batch;
+        double imu_drain_horizon = event.timestamp + scheduler_cfg_.watermark_margin_s;
+        if (scheduler_mode_ == SchedulerMode::EventStage2 && event.type == EventType::RadarScan)
+        {
+          imu_drain_horizon = event.timestamp + scheduler_cfg_.radar_imu_window_s;
+        }
+        drainImuFastQueueUpTo(imu_drain_horizon, imu_batch);
+        for (const auto& imu_msg : imu_batch)
+        {
+          imuCallback(imu_msg);
+        }
+      }
+
+      const double dispatch_begin = ros::WallTime::now().toSec();
       switch (event.type)
       {
         case EventType::Imu:
@@ -1253,10 +1527,13 @@ public:
         default:
           break;
       }
+      const double dispatch_end = ros::WallTime::now().toSec();
+      const double worker_dispatch_us = std::max(0.0, (dispatch_end - dispatch_begin) * 1.0e6);
 
       worker_processing_.store(false);
       active_radar_enqueue_wall_time_ = std::numeric_limits<double>::quiet_NaN();
       event_queue_stats_.processed++;
+      scheduler_cv_.notify_all();
 
       writeSchedulerDiagRow(event,
                             queue_depth_after_pop,
@@ -1265,7 +1542,15 @@ public:
                             0.0,
                             0.0,
                             last_radar_enqueue_to_commit_ms_,
-                            last_radar_starved_);
+                            last_radar_starved_,
+                            queue_wait_us,
+                            select_ready_us,
+                            worker_dispatch_us,
+                            current_mfilter_lock_wait_us_,
+                            current_mfilter_lock_hold_us_,
+                            last_reve_ms_,
+                            last_backend_ms_,
+                            last_publish_ms_);
     }
   }
 
@@ -1387,6 +1672,16 @@ public:
    */
   void imuCallback(const sensor_msgs::Imu::ConstPtr& imu_msg)
   {
+    if (isEventMode() && !isWorkerThread() && scheduler_cfg_.imu_fast_path)
+    {
+      std::lock_guard<std::mutex> lock(scheduler_mutex_);
+      latest_imu_time_ = std::max(latest_imu_time_, imu_msg->header.stamp.toSec());
+      imu_fast_queue_.push_back(imu_msg);
+      updateImuHistoryUnlocked(*imu_msg);
+      scheduler_cv_.notify_all();
+      return;
+    }
+
     if (isEventMode() && !isWorkerThread())
     {
       SensorEvent event;
@@ -1398,8 +1693,15 @@ public:
     }
 
     std::unique_lock<std::mutex> lock(m_filter_, std::defer_lock);
+    const double lock_wait_begin = ros::WallTime::now().toSec();
+    double lock_wait_us = 0.0;
+    double lock_hold_begin = 0.0;
     if (!isEventMode() || !isWorkerThread())
+    {
       lock.lock();
+      lock_wait_us = std::max(0.0, (ros::WallTime::now().toSec() - lock_wait_begin) * 1.0e6);
+      lock_hold_begin = ros::WallTime::now().toSec();
+    }
 
     if (most_recent_imus_.size() < 20)
       most_recent_imus_.emplace_back(*imu_msg);
@@ -1458,6 +1760,11 @@ public:
       std::cout << std::setprecision(12);
       std::cout << "-- Filter: Initialized at t = " << imu_msg->header.stamp.toSec() << std::endl;
       init_state_.state_ = FilterInitializationState::State::Initialized;
+    }
+    if (!isEventMode() || !isWorkerThread())
+    {
+      current_mfilter_lock_wait_us_ = lock_wait_us;
+      current_mfilter_lock_hold_us_ = std::max(0.0, (ros::WallTime::now().toSec() - lock_hold_begin) * 1.0e6);
     }
   }
 
@@ -1715,6 +2022,13 @@ public:
       lock_wait_us = std::max(0.0, (ros::WallTime::now().toSec() - lock_wait_begin) * 1.0e6);
     }
     const double lock_hold_begin = ros::WallTime::now().toSec();
+    const auto finalize_lock_metrics = [&]() {
+      if (!isEventMode() || !isWorkerThread())
+      {
+        current_mfilter_lock_wait_us_ = lock_wait_us;
+        current_mfilter_lock_hold_us_ = std::max(0.0, (ros::WallTime::now().toSec() - lock_hold_begin) * 1.0e6);
+      }
+    };
     radar_scan_callback_count_++;
     if (scheduler_mode_ == SchedulerMode::EventStage2)
     {
@@ -1739,9 +2053,11 @@ public:
                         0,
                         0);
         most_recent_radar_scan_.header.stamp = ros::TIME_MIN;
+        finalize_lock_metrics();
         return;
       }
       processRadarScan(w - mpFilter_->safe_.state_.gyb());
+      finalize_lock_metrics();
       return;
     }
 
@@ -1752,6 +2068,7 @@ public:
     (void)lock_wait_us;
     (void)lock_hold_us;
     (void)lock_hold_begin;
+    finalize_lock_metrics();
   }
 
   void processRadarScan(const Eigen::Vector3d& w)
@@ -1769,12 +2086,15 @@ public:
     int nis_exceed_95         = 0;
     int radar_update_committed = 0;
     last_radar_enqueue_to_commit_ms_ = std::numeric_limits<double>::quiet_NaN();
+    last_reve_ms_ = std::numeric_limits<double>::quiet_NaN();
+    last_backend_ms_ = std::numeric_limits<double>::quiet_NaN();
 
     const double t_reve_start = ros::WallTime::now().toSec();
 
     if (radar_body_estimator_->estimate(most_recent_radar_scan_, w, v_b_r, cov_v_b_r_reve, &radar_diag))
     {
       runtime_reve_ms = (ros::WallTime::now().toSec() - t_reve_start) * 1000.0;
+      last_reve_ms_ = runtime_reve_ms;
       if (init_state_.isInitialized())
       {
         if (!computeRadarCovariance(cov_v_b_r_reve, radar_diag, cov_v_b_r_used, d_r, alpha_r))
@@ -1807,6 +2127,7 @@ public:
                                              most_recent_radar_scan_.header.stamp.toSec() + 10.0e-3);
         updateAndPublish();
         runtime_backend_ms = (ros::WallTime::now().toSec() - t_backend_start) * 1000.0;
+        last_backend_ms_ = runtime_backend_ms;
 
         const VelocityUpdateDiag& vel_diag = mpVelocityUpdate_->getLastDiag();
         nis_vel = vel_diag.mahalanobis_distance;
@@ -1872,6 +2193,7 @@ public:
     else
     {
       runtime_reve_ms = (ros::WallTime::now().toSec() - t_reve_start) * 1000.0;
+      last_reve_ms_ = runtime_reve_ms;
       ROS_INFO_STREAM("[radarScanCallback]: Ego velocity failed");
       writeDvcDiagRow(most_recent_radar_scan_.header.stamp.toSec(),
                       radar_diag,
@@ -2026,9 +2348,13 @@ public:
       }
       if (mpFilter_->safe_.t_ > oldSafeTime)
       {  // Publish only if something changed
+        publish_cycle_count_++;
+        const bool run_pub_cycle = !isPerfMode() || shouldRunOnCycle(perf_cfg_.pub_decimation);
+        const bool run_tf_cycle  = !isPerfMode() || shouldRunOnCycle(perf_cfg_.tf_decimation);
+        const double t_publish_begin = ros::WallTime::now().toSec();
         for (int i = 0; i < mtState::nCam_; i++)
         {
-          if (!mpFilter_->safe_.img_[i].empty() && mpImgUpdate_->doFrameVisualisation_)
+          if (run_pub_cycle && !mpFilter_->safe_.img_[i].empty() && mpImgUpdate_->doFrameVisualisation_)
           {
             sensor_msgs::ImagePtr msg;
             std_msgs::Header header;
@@ -2040,7 +2366,7 @@ public:
             //          cv::waitKey(3);
           }
         }
-        if (!mpFilter_->safe_.patchDrawing_.empty() && mpImgUpdate_->visualizePatches_)
+        if (run_pub_cycle && !mpFilter_->safe_.patchDrawing_.empty() && mpImgUpdate_->visualizePatches_)
         {
           cv::imshow("Patches", mpFilter_->safe_.patchDrawing_);
           cv::waitKey(3);
@@ -2071,7 +2397,7 @@ public:
         }
 
         // Send Map (Pose Sensor, I) to World (rovio-intern, W) transformation
-        if (mpPoseUpdate_->inertialPoseIndex_ >= 0)
+        if (run_tf_cycle && mpPoseUpdate_->inertialPoseIndex_ >= 0)
         {
           Eigen::Vector3d IrIW = state.poseLin(mpPoseUpdate_->inertialPoseIndex_);
           QPD qWI              = state.poseRot(mpPoseUpdate_->inertialPoseIndex_);
@@ -2085,26 +2411,32 @@ public:
         }
 
         // Send IMU pose.
-        tf::StampedTransform tf_transform_MW;
-        tf_transform_MW.frame_id_       = world_frame_;
-        tf_transform_MW.child_frame_id_ = imu_frame_;
-        tf_transform_MW.stamp_          = ros::Time(mpFilter_->safe_.t_);
-        tf_transform_MW.setOrigin(tf::Vector3(imuOutput_.WrWB()(0), imuOutput_.WrWB()(1), imuOutput_.WrWB()(2)));
-        tf_transform_MW.setRotation(
-            tf::Quaternion(imuOutput_.qBW().x(), imuOutput_.qBW().y(), imuOutput_.qBW().z(), -imuOutput_.qBW().w()));
-        tb_.sendTransform(tf_transform_MW);
+        if (run_tf_cycle)
+        {
+          tf::StampedTransform tf_transform_MW;
+          tf_transform_MW.frame_id_       = world_frame_;
+          tf_transform_MW.child_frame_id_ = imu_frame_;
+          tf_transform_MW.stamp_          = ros::Time(mpFilter_->safe_.t_);
+          tf_transform_MW.setOrigin(tf::Vector3(imuOutput_.WrWB()(0), imuOutput_.WrWB()(1), imuOutput_.WrWB()(2)));
+          tf_transform_MW.setRotation(
+              tf::Quaternion(imuOutput_.qBW().x(), imuOutput_.qBW().y(), imuOutput_.qBW().z(), -imuOutput_.qBW().w()));
+          tb_.sendTransform(tf_transform_MW);
+        }
 
         // Send camera pose.
-        for (int camID = 0; camID < mtState::nCam_; camID++)
+        if (run_tf_cycle)
         {
-          tf::StampedTransform tf_transform_CM;
-          tf_transform_CM.frame_id_       = imu_frame_;
-          tf_transform_CM.child_frame_id_ = camera_frame_ + std::to_string(camID);
-          tf_transform_CM.stamp_          = ros::Time(mpFilter_->safe_.t_);
-          tf_transform_CM.setOrigin(tf::Vector3(state.MrMC(camID)(0), state.MrMC(camID)(1), state.MrMC(camID)(2)));
-          tf_transform_CM.setRotation(
-              tf::Quaternion(state.qCM(camID).x(), state.qCM(camID).y(), state.qCM(camID).z(), -state.qCM(camID).w()));
-          tb_.sendTransform(tf_transform_CM);
+          for (int camID = 0; camID < mtState::nCam_; camID++)
+          {
+            tf::StampedTransform tf_transform_CM;
+            tf_transform_CM.frame_id_       = imu_frame_;
+            tf_transform_CM.child_frame_id_ = camera_frame_ + std::to_string(camID);
+            tf_transform_CM.stamp_          = ros::Time(mpFilter_->safe_.t_);
+            tf_transform_CM.setOrigin(tf::Vector3(state.MrMC(camID)(0), state.MrMC(camID)(1), state.MrMC(camID)(2)));
+            tf_transform_CM.setRotation(tf::Quaternion(
+                state.qCM(camID).x(), state.qCM(camID).y(), state.qCM(camID).z(), -state.qCM(camID).w()));
+            tb_.sendTransform(tf_transform_CM);
+          }
         }
 
         // Publish Odometry
@@ -2285,8 +2617,9 @@ public:
         }
 
         // PointCloud message.
-        if (pubPcl_.getNumSubscribers() > 0 || pubMarkers_.getNumSubscribers() > 0 || forcePclPublishing_ ||
-            forceMarkersPublishing_)
+        if (run_pub_cycle &&
+            (pubPcl_.getNumSubscribers() > 0 || pubMarkers_.getNumSubscribers() > 0 || forcePclPublishing_ ||
+             forceMarkersPublishing_))
         {
           pclMsg_.header.seq      = msgSeq_;
           pclMsg_.header.stamp    = ros::Time(mpFilter_->safe_.t_);
@@ -2411,7 +2744,7 @@ public:
           pubPcl_.publish(pclMsg_);
           pubMarkers_.publish(markerMsg_);
         }
-        if (pubPatch_.getNumSubscribers() > 0 || forcePatchPublishing_)
+        if (run_pub_cycle && (pubPatch_.getNumSubscribers() > 0 || forcePatchPublishing_))
         {
           patchMsg_.header.seq   = msgSeq_;
           patchMsg_.header.stamp = ros::Time(mpFilter_->safe_.t_);
@@ -2469,6 +2802,8 @@ public:
 
           pubPatch_.publish(patchMsg_);
         }
+        const double t_publish_end = ros::WallTime::now().toSec();
+        last_publish_ms_ = std::max(0.0, (t_publish_end - t_publish_begin) * 1000.0);
         gotFirstMessages_ = true;
       }
     }

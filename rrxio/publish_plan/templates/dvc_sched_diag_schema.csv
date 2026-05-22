@@ -14,3 +14,21 @@ lock_wait_us,float64,us,lock waiting duration,true
 lock_hold_us,float64,us,lock hold duration,true
 radar_enqueue_to_commit_ms,float64,ms,latency from radar enqueue to committed update,true
 radar_starved,int,-,1 if radar update starved for imu support,true
+queue_wait_us,float64,us,time waiting on condition variables before event selection,true
+select_ready_us,float64,us,time spent selecting next ready event,true
+worker_dispatch_us,float64,us,worker dispatch processing time for the event,true
+mfilter_lock_wait_us,float64,us,wait time before acquiring m_filter,true
+mfilter_lock_hold_us,float64,us,hold time of m_filter critical section,true
+reve_ms,float64,ms,radar frontend estimation runtime,true
+backend_ms,float64,ms,velocity update backend runtime,true
+publish_ms,float64,ms,publish and output serialization runtime,true
+diag_io_ms,float64,ms,diagnostic csv write and flush runtime,true
+loader_backpressure_wait_ms,float64,ms,loader-side backpressure wait linked to this event,true
+loader_backpressure_reason,string,-,loader backpressure trigger reason (queue_high/imu_fast_guard/none),true
+loader_backpressure_queue_depth,uint,-,event queue depth sampled at loader backpressure trigger,true
+loader_backpressure_imu_depth,uint,-,imu fast queue depth sampled at loader backpressure trigger,true
+loader_backpressure_timeout,int,-,1 if loader backpressure wait timed out,true
+event_queue_wait_ms,float64,ms,derived from queue_wait_us / 1000,true
+worker_dispatch_ms,float64,ms,derived from worker_dispatch_us / 1000,true
+update_publish_ms,float64,ms,derived from backend_ms + publish_ms,true
+diag_write_ms,float64,ms,derived from diag_io_ms,true

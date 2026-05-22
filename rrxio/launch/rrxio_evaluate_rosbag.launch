@@ -46,8 +46,15 @@
     <arg name="dvc_scheduler_enable_diag" default="False"/>
     <arg name="dvc_scheduler_diag_output_dir" default=""/>
     <arg name="dvc_scheduler_backpressure_depth" default="-1"/>
+    <arg name="dvc_scheduler_backpressure_high" default="-1"/>
+    <arg name="dvc_scheduler_backpressure_low" default="-1"/>
     <arg name="dvc_scheduler_backpressure_timeout_s" default="5.0"/>
     <arg name="dvc_scheduler_drain_timeout_s" default="120.0"/>
+    <arg name="dvc_scheduler_imu_fast_path" default="True"/>
+    <arg name="dvc_perf_mode" default="normal"/>
+    <arg name="dvc_perf_pub_decimation" default="2"/>
+    <arg name="dvc_perf_tf_decimation" default="2"/>
+    <arg name="dvc_perf_diag_flush_every_n" default="32"/>
 
     <node pkg="rrxio" type="rrxio_rosbag_loader_$(arg N)" name="rovio$(arg id)" output="screen" clear_params="True" launch-prefix="bash -c 'sleep 2; $0 $@' ">
         <param name="filter_config" value="$(arg config)"/>
@@ -81,7 +88,16 @@
         <param name="dvc_rrxio/scheduler/radar_imu_window_s" value="$(arg dvc_scheduler_radar_imu_window_s)"/>
         <param name="dvc_rrxio/scheduler/enable_diag" type="bool" value="$(arg dvc_scheduler_enable_diag)"/>
         <param name="dvc_rrxio/scheduler/diag_output_dir" type="str" value="$(arg dvc_scheduler_diag_output_dir)"/>
+        <param name="dvc_rrxio/scheduler/imu_fast_path" type="bool" value="$(arg dvc_scheduler_imu_fast_path)"/>
+        <param name="dvc_rrxio/scheduler/backpressure_high" value="$(arg dvc_scheduler_backpressure_high)"/>
+        <param name="dvc_rrxio/scheduler/backpressure_low" value="$(arg dvc_scheduler_backpressure_low)"/>
+        <param name="dvc_rrxio/perf_mode" type="str" value="$(arg dvc_perf_mode)"/>
+        <param name="dvc_rrxio/perf/pub_decimation" value="$(arg dvc_perf_pub_decimation)"/>
+        <param name="dvc_rrxio/perf/tf_decimation" value="$(arg dvc_perf_tf_decimation)"/>
+        <param name="dvc_rrxio/perf/diag_flush_every_n" value="$(arg dvc_perf_diag_flush_every_n)"/>
         <param name="scheduler_backpressure_depth" value="$(arg dvc_scheduler_backpressure_depth)"/>
+        <param name="scheduler_backpressure_high" value="$(arg dvc_scheduler_backpressure_high)"/>
+        <param name="scheduler_backpressure_low" value="$(arg dvc_scheduler_backpressure_low)"/>
         <param name="scheduler_backpressure_timeout_s" value="$(arg dvc_scheduler_backpressure_timeout_s)"/>
         <param name="scheduler_drain_timeout_s" value="$(arg dvc_scheduler_drain_timeout_s)"/>
 

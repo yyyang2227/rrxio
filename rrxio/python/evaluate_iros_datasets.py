@@ -42,7 +42,9 @@ def _append_manifest_row(manifest_csv, row):
         "run_id", "date", "week", "stage", "dataset", "modality", "launch_file", "config_info", "camera_config",
         "bag_start", "bag_duration", "timeshift_cam_imu", "topic_radar_trigger", "topic_radar_scan", "feature_num",
         "git_rev_root", "git_rev_reve", "cov_mode", "scheduler_mode", "config_tag", "status", "owner", "note",
-        "runtime_s", "export_directory", "diag_file", "sched_diag_file"
+        "runtime_s", "export_directory", "diag_file", "sched_diag_file", "perf_mode_requested", "perf_mode_effective",
+        "dvc_scheduler_max_events", "dvc_scheduler_backpressure_depth", "dvc_scheduler_backpressure_high",
+        "dvc_scheduler_backpressure_low", "dvc_scheduler_backpressure_timeout_s", "dvc_scheduler_imu_fast_path"
     ]
     is_new = not os.path.isfile(manifest_csv)
     with open(manifest_csv, "a", newline="", encoding="utf-8") as f:
@@ -152,6 +154,9 @@ def run_feature(args, n_feature, git_rev_root, git_rev_reve):
                         _ensure_dir(sched_diag_output_dir)
 
                         for k in range(args.n_trials):
+                            perf_mode_effective = args.dvc_perf_mode
+                            if args.dvc_perf_mode == "auto":
+                                perf_mode_effective = "perf" if scheduler_mode == "event_stage2" else "normal"
                             run_id = "%s_%s_%s_%s_%s_t%d" % (
                                 dt.datetime.now().strftime("%Y%m%d_%H%M%S"),
                                 str(n_feature),
@@ -181,8 +186,14 @@ def run_feature(args, n_feature, git_rev_root, git_rev_reve):
                             "dvc_scheduler_enable_diag:={scheduler_enable_diag} "
                             "dvc_scheduler_diag_output_dir:={sched_diag_output_dir} "
                             "dvc_scheduler_backpressure_depth:={scheduler_backpressure_depth} "
+                            "dvc_scheduler_backpressure_high:={scheduler_backpressure_high} "
+                            "dvc_scheduler_backpressure_low:={scheduler_backpressure_low} "
                             "dvc_scheduler_backpressure_timeout_s:={scheduler_backpressure_timeout_s} "
                             "dvc_scheduler_drain_timeout_s:={scheduler_drain_timeout_s} "
+                            "dvc_scheduler_imu_fast_path:={scheduler_imu_fast_path} "
+                            "dvc_perf_mode:={perf_mode} dvc_perf_pub_decimation:={perf_pub_decimation} "
+                            "dvc_perf_tf_decimation:={perf_tf_decimation} "
+                            "dvc_perf_diag_flush_every_n:={perf_diag_flush_every_n} "
                             "id:={idv} {n_features}"
                             ).format(
                             launch_file=base_config["launch_file"],
@@ -219,8 +230,15 @@ def run_feature(args, n_feature, git_rev_root, git_rev_reve):
                             scheduler_enable_diag=str(args.dvc_scheduler_enable_diag),
                             sched_diag_output_dir=sched_diag_output_dir,
                             scheduler_backpressure_depth=args.dvc_scheduler_backpressure_depth,
+                            scheduler_backpressure_high=args.dvc_scheduler_backpressure_high,
+                            scheduler_backpressure_low=args.dvc_scheduler_backpressure_low,
                             scheduler_backpressure_timeout_s=args.dvc_scheduler_backpressure_timeout_s,
                             scheduler_drain_timeout_s=args.dvc_scheduler_drain_timeout_s,
+                            scheduler_imu_fast_path="True" if int(args.dvc_scheduler_imu_fast_path) != 0 else "False",
+                            perf_mode=perf_mode_effective,
+                            perf_pub_decimation=args.dvc_perf_pub_decimation,
+                            perf_tf_decimation=args.dvc_perf_tf_decimation,
+                            perf_diag_flush_every_n=args.dvc_perf_diag_flush_every_n,
                             idv=str(n_feature),
                             n_features=n_rovio_features,
                         )
@@ -263,6 +281,14 @@ def run_feature(args, n_feature, git_rev_root, git_rev_reve):
                                     "export_directory": export_directory_run,
                                     "diag_file": diag_file,
                                     "sched_diag_file": sched_diag_file,
+                                    "perf_mode_requested": args.dvc_perf_mode,
+                                    "perf_mode_effective": perf_mode_effective,
+                                    "dvc_scheduler_max_events": args.dvc_scheduler_max_events,
+                                    "dvc_scheduler_backpressure_depth": args.dvc_scheduler_backpressure_depth,
+                                    "dvc_scheduler_backpressure_high": args.dvc_scheduler_backpressure_high,
+                                    "dvc_scheduler_backpressure_low": args.dvc_scheduler_backpressure_low,
+                                    "dvc_scheduler_backpressure_timeout_s": args.dvc_scheduler_backpressure_timeout_s,
+                                    "dvc_scheduler_imu_fast_path": args.dvc_scheduler_imu_fast_path,
                                 },
                             )
 
@@ -350,9 +376,16 @@ def main():
     parser.add_argument("--dvc_scheduler_watermark_max_wait_s", type=float, default=0.200)
     parser.add_argument("--dvc_scheduler_radar_imu_window_s", type=float, default=0.020)
     parser.add_argument("--dvc_scheduler_backpressure_depth", type=int, default=-1)
+    parser.add_argument("--dvc_scheduler_backpressure_high", type=int, default=-1)
+    parser.add_argument("--dvc_scheduler_backpressure_low", type=int, default=-1)
     parser.add_argument("--dvc_scheduler_backpressure_timeout_s", type=float, default=5.0)
     parser.add_argument("--dvc_scheduler_drain_timeout_s", type=float, default=120.0)
+    parser.add_argument("--dvc_scheduler_imu_fast_path", type=int, default=1, help="1 to enable, 0 to disable")
     parser.add_argument("--dvc_scheduler_enable_diag", action="store_true", default=False)
+    parser.add_argument("--dvc_perf_mode", default="auto", help="auto|normal|perf")
+    parser.add_argument("--dvc_perf_pub_decimation", type=int, default=2)
+    parser.add_argument("--dvc_perf_tf_decimation", type=int, default=2)
+    parser.add_argument("--dvc_perf_diag_flush_every_n", type=int, default=32)
     parser.add_argument("--datasets", default="", help="Comma-separated dataset names")
     args = parser.parse_args()
 
@@ -377,6 +410,11 @@ def main():
     for mode in args.scheduler_modes:
         if mode not in ("legacy", "event_stage1", "event_stage2"):
             raise RuntimeError("Unsupported scheduler mode: %s" % mode)
+    args.dvc_perf_mode = args.dvc_perf_mode.strip().lower()
+    if args.dvc_perf_mode not in ("normal", "perf", "auto"):
+        raise RuntimeError("Unsupported dvc_perf_mode: %s" % args.dvc_perf_mode)
+    if args.dvc_perf_pub_decimation <= 0 or args.dvc_perf_tf_decimation <= 0 or args.dvc_perf_diag_flush_every_n <= 0:
+        raise RuntimeError("Performance decimation and flush parameters must be > 0.")
 
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     git_rev_root = _git_rev(repo_root)

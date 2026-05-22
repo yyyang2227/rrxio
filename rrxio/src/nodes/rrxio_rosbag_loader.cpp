@@ -173,6 +173,16 @@ int main(int argc, char** argv)
   int scheduler_backpressure_depth = -1;
   nh_private.param("scheduler_backpressure_depth", scheduler_backpressure_depth, scheduler_backpressure_depth);
 
+  int scheduler_backpressure_high = -1;
+  nh_private.param("dvc_rrxio/scheduler/backpressure_high",
+                   scheduler_backpressure_high,
+                   scheduler_backpressure_high);
+  nh_private.param("scheduler_backpressure_high", scheduler_backpressure_high, scheduler_backpressure_high);
+
+  int scheduler_backpressure_low = -1;
+  nh_private.param("dvc_rrxio/scheduler/backpressure_low", scheduler_backpressure_low, scheduler_backpressure_low);
+  nh_private.param("scheduler_backpressure_low", scheduler_backpressure_low, scheduler_backpressure_low);
+
   double scheduler_backpressure_timeout_s = 5.0;
   nh_private.param("scheduler_backpressure_timeout_s",
                    scheduler_backpressure_timeout_s,
@@ -226,12 +236,30 @@ int main(int argc, char** argv)
   ros::Time start           = ros::TIME_MIN;
   uint frame_ctr            = 0;
   const bool event_mode     = rovioNode.isEventMode();
+  const bool imu_fast_path  = rovioNode.isImuFastPathEnabled();
   const int default_backpressure_depth =
-      static_cast<int>(std::max<size_t>(64, rovioNode.getSchedulerMaxEvents() / static_cast<size_t>(8)));
+      static_cast<int>(std::max<size_t>(32, rovioNode.getSchedulerMaxEvents() / static_cast<size_t>(32)));
   if (scheduler_backpressure_depth <= 0)
   {
     scheduler_backpressure_depth = default_backpressure_depth;
   }
+  if (scheduler_backpressure_high <= 0)
+  {
+    scheduler_backpressure_high = scheduler_backpressure_depth;
+  }
+  if (scheduler_backpressure_low < 0)
+  {
+    scheduler_backpressure_low = std::max(0, scheduler_backpressure_high / 2);
+  }
+  if (scheduler_backpressure_low >= scheduler_backpressure_high)
+  {
+    scheduler_backpressure_low = std::max(0, scheduler_backpressure_high - 1);
+  }
+  const int imu_fast_guard_high = scheduler_backpressure_high + std::max(32, scheduler_backpressure_high / 2);
+  const int imu_fast_guard_low  = std::max(scheduler_backpressure_high, imu_fast_guard_high - 32);
+
+  bool in_backpressure = false;
+  std::string backpressure_reason = "none";
 
   for (rosbag::View::iterator it = view.begin(); it != view.end() && ros::ok(); it++)
   {
@@ -306,15 +334,58 @@ int main(int argc, char** argv)
 
     ros::spinOnce();
 
-    if (event_mode)
+    const bool is_imu_topic = (it->getTopic() == imu_topic_name);
+    if (event_mode && !is_imu_topic)
     {
-      const bool queue_ok = rovioNode.waitUntilSchedulerQueueBelow(static_cast<size_t>(scheduler_backpressure_depth),
-                                                                    scheduler_backpressure_timeout_s);
-      if (!queue_ok)
+      const size_t queue_depth     = rovioNode.getSchedulerQueueDepth();
+      const size_t imu_fast_depth  = imu_fast_path ? rovioNode.getImuFastQueueDepth() : 0;
+      const bool queue_over_high   = queue_depth >= static_cast<size_t>(scheduler_backpressure_high);
+      const bool imu_fast_over_guard =
+          imu_fast_path && imu_fast_depth >= static_cast<size_t>(imu_fast_guard_high);
+      if (!in_backpressure && (queue_over_high || imu_fast_over_guard))
       {
-        ROS_WARN_STREAM("[scheduler] queue backpressure wait timeout. depth=" << rovioNode.getSchedulerQueueDepth()
-                                                                              << " target="
-                                                                              << scheduler_backpressure_depth);
+        in_backpressure = true;
+        backpressure_reason = queue_over_high ? "queue_high" : "imu_fast_guard";
+      }
+
+      if (in_backpressure)
+      {
+        const size_t queue_depth_before_wait = queue_depth;
+        const size_t imu_depth_before_wait   = imu_fast_depth;
+        const double t_wait_begin            = ros::WallTime::now().toSec();
+        const bool queue_ok =
+            rovioNode.waitUntilSchedulerQueueBelow(static_cast<size_t>(scheduler_backpressure_low),
+                                                   scheduler_backpressure_timeout_s);
+        const bool imu_fast_ok =
+            !imu_fast_over_guard ||
+            rovioNode.waitUntilImuFastQueueBelow(static_cast<size_t>(imu_fast_guard_low),
+                                                 scheduler_backpressure_timeout_s);
+        const double t_wait_end = ros::WallTime::now().toSec();
+        const double wait_ms = std::max(0.0, (t_wait_end - t_wait_begin) * 1000.0);
+        const bool timed_out = !queue_ok || !imu_fast_ok;
+        rovioNode.noteLoaderBackpressureWait(
+            wait_ms, backpressure_reason, queue_depth_before_wait, imu_depth_before_wait, timed_out);
+        if (!queue_ok || !imu_fast_ok)
+        {
+          ROS_WARN_STREAM("[scheduler] queue backpressure wait timeout. depth=" << rovioNode.getSchedulerQueueDepth()
+                                                                                 << ", imu_fast_depth="
+                                                                                 << rovioNode.getImuFastQueueDepth()
+                                                                                 << " target_low="
+                                                                                 << scheduler_backpressure_low
+                                                                                 << " target_high="
+                                                                                 << scheduler_backpressure_high
+                                                                                 << " imu_guard_high="
+                                                                                 << imu_fast_guard_high
+                                                                                 << " reason="
+                                                                                 << backpressure_reason
+                                                                                 << " wait_ms="
+                                                                                 << wait_ms);
+          in_backpressure = false;
+        }
+        else
+        {
+          in_backpressure = false;
+        }
       }
     }
   }
