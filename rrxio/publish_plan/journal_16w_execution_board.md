@@ -14,6 +14,10 @@
   - 启动入口：`rrxio/launch/rrxio_evaluate_rosbag.launch`
   - 批量评估脚本：`rrxio/python/evaluate_iros_datasets.py`
   - 轨迹评估脚本：`thirdparty/rpg_trajectory_evaluation/scripts/analyze_trajectories.py`
+- 参数输入已统一：
+  - 统一配置文件：`rrxio/launch/configs/dvc_rrxio_unified_params.yaml`
+  - 运行时按 run 生成配置：`<results_root>/dvc_param_configs/dvc_params_<run_id>.yaml`
+  - launch 通过 `dvc_unified_config` 单入口加载参数。
 - W1-W4 实施资产已落地（待门禁验收）：
   - `rrxio/python/freeze_baseline_snapshot.py`
   - `rrxio/python/summarize_baseline_results.py`
@@ -25,7 +29,7 @@
 |---|---|---|---|---|---|---|
 | W1-W2 | DONE | 基线冻结与复现 | 固化评估链路；运行 `freeze_baseline_snapshot.py` 输出快照 | 视觉/热成像基线各重复3次 | `baseline_v1/` 结果包+快照 | 关键指标波动在可接受范围 |
 | W3-W4 | DONE | 诊断链最小闭环 | 在 `RRxIONode` 与 REVE 链路增补 `cond/inlier_ratio/traceR/minEigR/update_used` 输出 | 校验诊断值随场景变化趋势 | `dvc_diag.csv` + 诊断图 | 每帧可追踪、无缺列 |
-| W5-W6 | DONE | Contribution-1 | 接入 `alpha_R` 各向同性重标定（保持低侵入） + NIS 诊断闭环 | 全量对比 `base/fixed/alpha_r`（9序列×2模态×3次） | `w6_metrics.csv`+`w6_summary.md`+对比图 | Gate-W6 严格门禁 PASS |
+| W5-W6 | DONE | Contribution-1（已完成） | 接入 `alpha_R` 各向同性重标定（保持低侵入） + NIS 诊断闭环 + 调度确定性修正 | 全量对比 `base/fixed/alpha_r`（9序列×2模态×3次） | `w6_metrics.csv`+`w6_summary.md`+对比图+Gate报告 | Gate-W6 与 Scheduler 严格门禁双 PASS |
 | W7-W8 | TODO | Contribution-2 | 接入 `S_k` 方向性塑形 + SPD保护 | 几何退化专项实验 | 退化证据图 | 退化段突跳减少 |
 | W9-W10 | TODO | Contribution-3 | 接入 `alpha_NIS` 与 `zeta_RV`，明确更新接受/拒绝日志 | 双退化实验（视觉差+雷达差） | 完整 DVC 主链 | `alpha_NIS` 不长期饱和 |
 | W11-W12 | TODO | 完整消融矩阵 | 统一实验配置与导出格式 | 全基线+全消融批量跑 | 消融总表+图集 | 每个主张有对应证据 |
@@ -74,6 +78,69 @@ Gate-W6 关键指标（alpha_r vs base）：
 - ATE 中位数：`0.113182 -> 0.101191`（未恶化，改善 `10.59%`）
 - RPE 中位数：`0.074655 -> 0.074027`（未恶化，改善 `0.84%`）
 - 运行时中位数：`10.111s -> 10.063s`（增量 `-0.48%`）
+
+## 4.3 W6 指标修复回合（2026-05-22，A/B/C 小批筛选）
+门禁脚本：`rrxio/python/gate_scheduler_check.py`（绝对时延门禁：`median<=30ms,p95<=50ms,max<=80ms`）
+
+| 候选 | backpressure(high/low) | 结果目录 | Gate | 关键失败项 |
+|---|---|---|---|---|
+| A | `128/64` | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w6_tune_a_smallbatch` | FAIL | latency: `54.35/77.63/147.96ms`; `RPE degrade=19.25%` |
+| B | `192/96` | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w6_tune_b_smallbatch` | FAIL | latency: `61.18/83.15/123.94ms`; `RPE degrade=14.58%`; repeatability 1 组超阈 |
+| C | `256/128` | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w6_tune_c_smallbatch` | FAIL | latency: `79.50/107.79/177.15ms`; `RPE degrade=13.86%`; repeatability 2 组超阈 |
+
+补充结论：
+- 三档均满足：`radar_starved=0`、`runtime_ratio` 均优于 `1.15` 上限、`NIS` 与 `committed_drop` 未触发硬门禁。
+- 当前阻塞主因仍是 `event_stage2` 雷达提交时延长尾与 thermal 组 `RPE/ATE` 退化耦合。
+- 按门禁规则，W5-W6 当前状态保持 `IN_PROGRESS/BLOCKED`，不得标注 `DONE`。
+
+## 4.4 W6 代码级确定性修正回合（2026-05-22，长尾压降专项）
+本回合改动：
+- 调度层：增加 `SchedulerSnapshot` 与 `radar_needs_imu_catchup` 判定，loader 回压改为 `Hard Queue Guard + IMU Guard + Catchup Bypass`。
+- worker 等待：`popNextReadyEvent()` 在无可执行事件时改为 10ms 量子等待（保持 predicate 唤醒与时序规则）。
+- 追加最小修正：REVE RANSAC 抽样改为按雷达数据构建的确定性 seed，消除跨运行随机漂移。
+
+小批门禁结果（`4序列×2模态×legacy/event_stage2×3次`）：
+| 批次 | backpressure(high/low) | 结果目录 | Gate | 关键结论 |
+|---|---|---|---|---|
+| fixdet-1 | `64/32` | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w6_fixdet_64_32_smallbatch` | FAIL | 时延已过阈值（`20.06/29.36/53.27ms`），失败项转为 `RPE degrade=13.39%` + repeatability |
+| fixdet-2 | `48/24` | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w6_fixdet_48_24_smallbatch` | FAIL | 时延继续下降（`16.68/26.32/57.70ms`），`RPE degrade=12.03%`，repeatability 仍超阈 |
+| fixdet-3 | `32/16` | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w6_fixdet_32_16_smallbatch` | FAIL | 时延最低（`12.53/22.31/48.26ms`）但 `RPE degrade` 反弹到 `19.11%` |
+| fixdet-4 | `48/24` + deterministic RANSAC | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w6_fixdet_seed_48_24_smallbatch` | FAIL | repeatability 全部恢复到阈值内，仅剩 `RPE degrade=13.57%` 单项失败 |
+
+当前结论：
+- `event_stage2` 雷达提交长尾问题已被显著压降并稳定通过时延门禁。
+- 当前唯一高优先阻塞项：`RPE degrade` 仍高于 `5%` 硬阈值。
+- （该回合结束时）阶段状态保持 `IN_PROGRESS/BLOCKED`，不得标注 `DONE`。
+
+## 4.5 W6 收敛回合（2026-05-22，确定性修正闭环完成）
+门禁脚本：`rrxio/python/gate_scheduler_check.py`（绝对时延门禁：`median<=30ms,p95<=50ms,max<=80ms`）
+
+最终收敛参数（同门禁配置）：
+- `cov_mode=alpha_r`
+- `scheduler_mode=event_stage2`
+- `dvc_scheduler_backpressure_high/low = 48/24`
+- `dvc_scheduler_imu_fast_path = 0`（关闭 IMU fast path）
+- 其余保持：`radar_imu_window_s=0.02`、`bag_duration=60`、`features=25`
+
+验证结果：
+| 批次 | 结果目录 | 规模 | Gate |
+|---|---|---|---|
+| 小批确认 | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w6_fixdet_fast0_48_24_smallbatch` | `4序列×2模态×legacy/event_stage2×3次` | PASS |
+| 全量确认 | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w6_fixdet_fast0_48_24_full` | `9序列×2模态×legacy/event_stage2×3次` | PASS |
+
+全量门禁关键指标（event_stage2 vs legacy）：
+- 雷达提交时延（ms）：`median=9.07, p95=16.95, max=41.74`（全部满足绝对门禁）
+- ATE degrade：`+1.23%`（<=5%）
+- RPE degrade：`-2.91%`（改善）
+- runtime increase：`-1.67%`（<=15%）
+- NIS 绝对增量：`+0.367pp`（<=1pp）
+- radar committed drop：`0.436%`（<=5%）
+- repeatability：`PASS`（CV 全部远低于阈值）
+- `radar_starved=0`（满足）
+
+收敛结论：
+- W6 阶段“时延长尾 + ATE/RPE + repeatability”已在同一硬门禁下同时闭环。
+- W5-W6 阶段状态可标记为 `DONE`，允许推进 W7-W8。
 
 ## 5. 目录与命名规范（统一结果资产）
 建议根目录：`<dataset_root>/results/dvc_rrxio_publish/`

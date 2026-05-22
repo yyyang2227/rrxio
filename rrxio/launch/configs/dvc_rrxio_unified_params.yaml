@@ -1,0 +1,46 @@
+# Unified runtime parameters for DVC-RRxIO.
+# This file is loaded by rrxio_evaluate_rosbag.launch and can be swapped per run.
+
+dvc_diag_enabled: true              # Global switch for DVC runtime diagnostic CSV output.
+dvc_diag_output_dir: ""             # Output directory for dvc_diag_<run_id>.csv.
+dvc_run_id: ""                      # Unique run identifier used in diagnostics and manifests.
+
+dvc_rrxio:
+  cov_mode: "base"                  # Radar covariance mode: base | fixed | alpha_r.
+  fixed_scale: 2.0                  # Multiplicative scale used only when cov_mode=fixed.
+  alpha_r:
+    w_cond: 0.7                     # Weight of condition-number degradation term.
+    w_inlier: 1.0                   # Weight of inlier-ratio degradation term.
+    w_sparse: 0.6                   # Weight of sparse-target degradation term.
+    n_targets_ref: 40.0             # Reference target count for sparsity normalization.
+    k_alpha: 1.5                    # Gain from degradation score to alpha_R.
+    alpha_r_max: 5.0                # Upper bound of alpha_R inflation.
+    sigma_min2: 0.0001              # Minimum variance floor for SPD protection.
+
+  scheduler:
+    mode: "legacy"                  # Scheduler mode: legacy | event_stage1 | event_stage2.
+    max_events: 2048                # Maximum queued events before overflow policy triggers.
+    watermark_margin_s: 0.002       # Required IMU lead over event timestamp in seconds.
+    watermark_max_wait_s: 0.200     # Max wait before watermark timeout/drop handling in seconds.
+    radar_imu_window_s: 0.020       # IMU window length for radar angular-rate estimation in seconds.
+    enable_diag: false              # Enable scheduler diagnostic CSV emission.
+    diag_output_dir: ""             # Output directory for dvc_sched_diag_<run_id>.csv.
+    imu_fast_path: true             # Enable IMU fast-path bypass of normal event queue.
+    backpressure_high: -1           # High watermark for hysteresis backpressure (-1 uses auto default).
+    backpressure_low: -1            # Low watermark for hysteresis backpressure (-1 uses auto default).
+
+  perf_mode: "normal"               # Performance profile: normal | perf.
+  perf:
+    pub_decimation: 2               # Publish one message every N update cycles.
+    tf_decimation: 2                # Publish TF one message every N update cycles.
+    diag_flush_every_n: 32          # Flush diagnostic buffer every N rows.
+
+# Legacy scheduler keys consumed by rrxio_rosbag_loader.cpp
+scheduler_backpressure_depth: -1    # Legacy depth trigger for loader backpressure (-1 uses auto default).
+scheduler_backpressure_high: -1     # Legacy high watermark mirror (-1 uses auto default).
+scheduler_backpressure_low: -1      # Legacy low watermark mirror (-1 uses auto default).
+scheduler_backpressure_timeout_s: 5.0  # Max blocking wait per backpressure cycle in seconds.
+scheduler_drain_timeout_s: 120.0    # Max wait for worker drain at bag end in seconds.
+
+# REVE / RRxIO shared conditioning threshold
+max_r_cond: 1000.0                  # Maximum allowed LSQ condition number for REVE acceptance.

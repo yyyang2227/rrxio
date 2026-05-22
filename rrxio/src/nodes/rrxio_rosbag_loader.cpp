@@ -43,6 +43,7 @@
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/date_time/posix_time/posix_time_io.hpp>
 #include <random>
+#include <csignal>
 
 #define foreach BOOST_FOREACH
 
@@ -78,9 +79,26 @@ static constexpr int nPose_     = 0;   // Additional pose states.
 
 typedef rovio::RovioFilter<rovio::FilterState<nMax_, nLevels_, patchSize_, nCam_, nPose_>> mtFilter;
 
+namespace
+{
+volatile std::sig_atomic_t g_shutdown_signal = 0;
+
+void handleTerminationSignal(int /*signum*/)
+{
+  g_shutdown_signal = 1;
+}
+
+inline bool terminationRequested()
+{
+  return g_shutdown_signal != 0;
+}
+}  // namespace
+
 int main(int argc, char** argv)
 {
   ros::init(argc, argv, "rovio");
+  std::signal(SIGTERM, handleTerminationSignal);
+  std::signal(SIGINT, handleTerminationSignal);
   ros::NodeHandle nh;
   ros::NodeHandle nh_private("~");
 
@@ -231,8 +249,6 @@ int main(int argc, char** argv)
   ROS_INFO_STREAM("[rovio]: Subscribing radar_trigger on: " << topic_radar_trigger);
   ROS_INFO_STREAM("[rovio]: Subscribing radar_scan on: " << topic_radar_scan);
 
-  bool isTriggerInitialized = false;
-  double lastTriggerTime    = 0.0;
   ros::Time start           = ros::TIME_MIN;
   uint frame_ctr            = 0;
   const bool event_mode     = rovioNode.isEventMode();
@@ -261,7 +277,7 @@ int main(int argc, char** argv)
   bool in_backpressure = false;
   std::string backpressure_reason = "none";
 
-  for (rosbag::View::iterator it = view.begin(); it != view.end() && ros::ok(); it++)
+  for (rosbag::View::iterator it = view.begin(); it != view.end() && ros::ok() && !terminationRequested(); it++)
   {
     if (start == ros::TIME_MIN)
       start = it->getTime();
@@ -337,53 +353,116 @@ int main(int argc, char** argv)
     const bool is_imu_topic = (it->getTopic() == imu_topic_name);
     if (event_mode && !is_imu_topic)
     {
-      const size_t queue_depth     = rovioNode.getSchedulerQueueDepth();
-      const size_t imu_fast_depth  = imu_fast_path ? rovioNode.getImuFastQueueDepth() : 0;
-      const bool queue_over_high   = queue_depth >= static_cast<size_t>(scheduler_backpressure_high);
-      const bool imu_fast_over_guard =
-          imu_fast_path && imu_fast_depth >= static_cast<size_t>(imu_fast_guard_high);
-      if (!in_backpressure && (queue_over_high || imu_fast_over_guard))
+      const auto snapshot = rovioNode.getSchedulerSnapshot();
+      const size_t queue_depth = snapshot.event_queue_depth;
+      const size_t imu_fast_depth = imu_fast_path ? snapshot.imu_fast_depth : 0;
+      const bool queue_over_high = queue_depth >= static_cast<size_t>(scheduler_backpressure_high);
+      const bool queue_over_low = queue_depth > static_cast<size_t>(scheduler_backpressure_low);
+      const bool radar_imu_catchup = snapshot.radar_needs_imu_catchup;
+      const bool imu_fast_over_high = imu_fast_path && imu_fast_depth >= static_cast<size_t>(imu_fast_guard_high);
+      const bool imu_fast_over_low = imu_fast_path && imu_fast_depth > static_cast<size_t>(imu_fast_guard_low);
+
+      if (!in_backpressure)
       {
-        in_backpressure = true;
-        backpressure_reason = queue_over_high ? "queue_high" : "imu_fast_guard";
+        if (queue_over_high)
+        {
+          in_backpressure = true;
+          backpressure_reason = "queue_high";
+        }
+        else if (imu_fast_over_high)
+        {
+          if (radar_imu_catchup)
+          {
+            rovioNode.noteLoaderBackpressureWait(
+                0.0, "radar_imu_catchup_bypass", queue_depth, imu_fast_depth, false);
+          }
+          else
+          {
+            in_backpressure = true;
+            backpressure_reason = "imu_fast_guard";
+          }
+        }
+      }
+
+      if (in_backpressure && backpressure_reason != "queue_high" && queue_over_high)
+      {
+        backpressure_reason = "queue_high";
       }
 
       if (in_backpressure)
       {
+        if (terminationRequested() || !ros::ok())
+        {
+          in_backpressure = false;
+          break;
+        }
+
         const size_t queue_depth_before_wait = queue_depth;
         const size_t imu_depth_before_wait   = imu_fast_depth;
-        const double t_wait_begin            = ros::WallTime::now().toSec();
-        const bool queue_ok =
-            rovioNode.waitUntilSchedulerQueueBelow(static_cast<size_t>(scheduler_backpressure_low),
-                                                   scheduler_backpressure_timeout_s);
-        const bool imu_fast_ok =
-            !imu_fast_over_guard ||
-            rovioNode.waitUntilImuFastQueueBelow(static_cast<size_t>(imu_fast_guard_low),
-                                                 scheduler_backpressure_timeout_s);
-        const double t_wait_end = ros::WallTime::now().toSec();
-        const double wait_ms = std::max(0.0, (t_wait_end - t_wait_begin) * 1000.0);
-        const bool timed_out = !queue_ok || !imu_fast_ok;
-        rovioNode.noteLoaderBackpressureWait(
-            wait_ms, backpressure_reason, queue_depth_before_wait, imu_depth_before_wait, timed_out);
-        if (!queue_ok || !imu_fast_ok)
+        bool should_wait                     = false;
+        bool queue_ok                        = true;
+        bool imu_fast_ok                     = true;
+
+        if (backpressure_reason == "queue_high")
         {
-          ROS_WARN_STREAM("[scheduler] queue backpressure wait timeout. depth=" << rovioNode.getSchedulerQueueDepth()
-                                                                                 << ", imu_fast_depth="
-                                                                                 << rovioNode.getImuFastQueueDepth()
-                                                                                 << " target_low="
-                                                                                 << scheduler_backpressure_low
-                                                                                 << " target_high="
-                                                                                 << scheduler_backpressure_high
-                                                                                 << " imu_guard_high="
-                                                                                 << imu_fast_guard_high
-                                                                                 << " reason="
-                                                                                 << backpressure_reason
-                                                                                 << " wait_ms="
-                                                                                 << wait_ms);
-          in_backpressure = false;
+          should_wait = queue_over_low;
+          if (!should_wait)
+            in_backpressure = false;
+        }
+        else if (backpressure_reason == "imu_fast_guard")
+        {
+          if (radar_imu_catchup)
+          {
+            rovioNode.noteLoaderBackpressureWait(
+                0.0, "radar_imu_catchup_bypass", queue_depth_before_wait, imu_depth_before_wait, false);
+            in_backpressure = false;
+          }
+          else
+          {
+            should_wait = imu_fast_over_low;
+            if (!should_wait)
+              in_backpressure = false;
+          }
         }
         else
         {
+          in_backpressure = false;
+        }
+
+        if (should_wait)
+        {
+          const double t_wait_begin = ros::WallTime::now().toSec();
+          if (backpressure_reason == "queue_high")
+          {
+            queue_ok = rovioNode.waitUntilSchedulerQueueBelow(static_cast<size_t>(scheduler_backpressure_low),
+                                                              scheduler_backpressure_timeout_s);
+          }
+          else
+          {
+            imu_fast_ok = rovioNode.waitUntilImuFastQueueBelow(static_cast<size_t>(imu_fast_guard_low),
+                                                               scheduler_backpressure_timeout_s);
+          }
+          const double t_wait_end = ros::WallTime::now().toSec();
+          const double wait_ms = std::max(0.0, (t_wait_end - t_wait_begin) * 1000.0);
+          const bool timed_out = !queue_ok || !imu_fast_ok;
+          rovioNode.noteLoaderBackpressureWait(
+              wait_ms, backpressure_reason, queue_depth_before_wait, imu_depth_before_wait, timed_out);
+          if (timed_out)
+          {
+            ROS_WARN_STREAM("[scheduler] queue backpressure wait timeout. depth=" << rovioNode.getSchedulerQueueDepth()
+                                                                                   << ", imu_fast_depth="
+                                                                                   << rovioNode.getImuFastQueueDepth()
+                                                                                   << " target_low="
+                                                                                   << scheduler_backpressure_low
+                                                                                   << " target_high="
+                                                                                   << scheduler_backpressure_high
+                                                                                   << " imu_guard_high="
+                                                                                   << imu_fast_guard_high
+                                                                                   << " reason="
+                                                                                   << backpressure_reason
+                                                                                   << " wait_ms="
+                                                                                   << wait_ms);
+          }
           in_backpressure = false;
         }
       }
@@ -392,7 +471,9 @@ int main(int argc, char** argv)
 
   if (event_mode)
   {
-    const bool drained = rovioNode.waitUntilSchedulerDrained(scheduler_drain_timeout_s);
+    const double drain_timeout_s = (!ros::ok() || terminationRequested()) ? std::min(5.0, scheduler_drain_timeout_s)
+                                                                          : scheduler_drain_timeout_s;
+    const bool drained = rovioNode.waitUntilSchedulerDrained(drain_timeout_s);
     if (!drained)
     {
       ROS_WARN_STREAM("[scheduler] worker drain timeout at end of bag. remaining_depth="

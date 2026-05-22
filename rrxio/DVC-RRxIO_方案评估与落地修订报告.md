@@ -277,6 +277,31 @@
 - 结论：
   - W5-W6 可标记为 `DONE`，可进入 W7-W8（`S_k`）阶段。
 
+### 5.8 W6 调度确定性修正复验（2026-05-22）
+- 状态：`RESOLVED`（同门禁配置下通过）
+- 背景：
+  - 代码级确定性修正回合后，历史失败项曾收敛到单项 `RPE degrade`。
+  - 通过参数-调度联合复验（保持不改状态维度、不改 REVE 主算法）完成闭环。
+- 最终收敛配置：
+  - `cov_mode=alpha_r`
+  - `scheduler_mode=event_stage2`
+  - `dvc_scheduler_backpressure_high/low = 48/24`
+  - `dvc_scheduler_imu_fast_path = 0`
+- 验收证据：
+  - 小批目录：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w6_fixdet_fast0_48_24_smallbatch`
+  - 全量目录：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w6_fixdet_fast0_48_24_full`
+  - 门禁报告：`gate_scheduler_report.json`（`pass=true`，退出码 `0`）
+  - 全量关键指标（event_stage2 vs legacy）：
+    - 时延：`median=9.07ms, p95=16.95ms, max=41.74ms`
+    - `ATE degrade=+1.23%`
+    - `RPE degrade=-2.91%`
+    - `runtime increase=-1.67%`
+    - `NIS abs increase=+0.367pp`
+    - `committed_drop=0.436%`
+    - `repeatability=PASS`，`radar_starved=0`
+- 结论：
+  - W6 在“精度/一致性/时延/重复性”四维门禁下完成收敛，后续可进入 W7-W8。
+
 ### 《边界警示》
 - 以上修正优先级遵循“先消除参数/调度不一致，再引入新统计模型”。
 - 断点 #1/#2 与 W1-W4 门禁均已完成；后续进入 W5+ 时仍需保持“单创新点分阶段消融”。
@@ -462,3 +487,25 @@ addUpdateMeas<2>(v, t_meas);
 - 风险变化：
   - 已关闭 “`alpha_R` 缺失/NIS 无闭环” 风险。
   - 保留 `ROVIO_UPDATE_SOURCE` 调度耦合与大锁临界区开销风险，进入 W7+ 前继续监控。
+
+### 2026-05-22（v1.5）
+- 完成 W6 调度确定性修正复验并通过严格门禁（小批 + 全量）：
+  - 路径：`dvc_w6_fixdet_fast0_48_24_smallbatch`、`dvc_w6_fixdet_fast0_48_24_full`
+  - 参数：`imu_fast_path=0`、`backpressure=48/24`（其余维持 W6 基线）
+  - 报告：`gate_scheduler_report.json` 均为 `pass=true`
+- 结果变化：
+  - `event_stage2` 雷达提交时延长尾被压到绝对门限内（`max=41.74ms`）。
+  - `RPE degrade` 从失败项收敛为改善项（`-2.91%`）。
+  - `repeatability` 与 `radar_starved` 均满足门禁。
+
+### 2026-05-22（v1.6）
+- 新增统一参数输入机制（单配置文件入口）：
+  - 新增：`rrxio/launch/configs/dvc_rrxio_unified_params.yaml`
+  - launch 新增参数：`dvc_unified_config`，节点启动前统一加载该 YAML。
+  - 评测脚本改造：`evaluate_iros_datasets.py` 按 run 生成
+    `dvc_param_configs/dvc_params_<run_id>.yaml` 并仅通过 `dvc_unified_config` 注入 DVC 相关参数。
+  - `run_manifest.csv` 增加 `dvc_unified_config_file` 字段，参数追踪链从“命令行散参”收敛为“单文件可追溯”。
+- 验证：
+  - `python3 -m py_compile rrxio/python/evaluate_iros_datasets.py` 通过。
+  - `catkin build rrxio` 通过。
+  - 最小冒烟：`tmp_unified_cfg_smoke` 运行成功，已生成并生效 `dvc_params_<run_id>.yaml`。

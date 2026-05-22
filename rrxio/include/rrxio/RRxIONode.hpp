@@ -46,6 +46,7 @@
 #include <stdexcept>
 #include <cctype>
 #include <map>
+#include <vector>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <cerrno>
@@ -279,6 +280,7 @@ public:
   std::map<uint64_t, double> watermark_block_start_sec_;
   std::deque<sensor_msgs::Imu> imu_history_;
   std::ofstream dvc_sched_diag_stream_;
+  std::string dvc_sched_diag_path_;
   uint64_t dvc_sched_diag_rows_ = 0;
   std::mutex image_sync_mutex_;
   double active_radar_enqueue_wall_time_ = std::numeric_limits<double>::quiet_NaN();
@@ -724,7 +726,11 @@ public:
     if (dvc_diag_stream_.is_open())
       dvc_diag_stream_.close();
     if (dvc_sched_diag_stream_.is_open())
+    {
+      dvc_sched_diag_stream_.flush();
       dvc_sched_diag_stream_.close();
+      sanitizeSchedulerDiagFileTail();
+    }
   }
 
   static bool ensureDirectory(const std::string& directory)
@@ -924,6 +930,31 @@ public:
   bool isEventMode() const { return scheduler_mode_ != SchedulerMode::Legacy; }
   bool isWorkerThread() const { return isEventMode() && std::this_thread::get_id() == worker_thread_id_; }
   bool isImuFastPathEnabled() const { return scheduler_mode_ == SchedulerMode::EventStage2 && scheduler_cfg_.imu_fast_path; }
+  struct SchedulerSnapshot
+  {
+    double latest_imu_time = -std::numeric_limits<double>::infinity();
+    double oldest_pending_radar_timestamp = std::numeric_limits<double>::infinity();
+    size_t event_queue_depth = 0;
+    size_t imu_fast_depth = 0;
+    bool radar_needs_imu_catchup = false;
+  };
+  SchedulerSnapshot getSchedulerSnapshot()
+  {
+    std::lock_guard<std::mutex> lock(scheduler_mutex_);
+    SchedulerSnapshot snapshot;
+    snapshot.latest_imu_time = latest_imu_time_;
+    snapshot.oldest_pending_radar_timestamp = oldest_pending_radar_timestamp_;
+    snapshot.event_queue_depth = event_queue_.size();
+    snapshot.imu_fast_depth = imu_fast_queue_.size();
+    snapshot.radar_needs_imu_catchup = std::isfinite(oldest_pending_radar_timestamp_) &&
+                                       latest_imu_time_ < oldest_pending_radar_timestamp_ + scheduler_cfg_.radar_imu_window_s;
+    return snapshot;
+  }
+  bool radarNeedsImuCatchup()
+  {
+    const SchedulerSnapshot snapshot = getSchedulerSnapshot();
+    return snapshot.radar_needs_imu_catchup;
+  }
   size_t getSchedulerQueueDepth()
   {
     std::lock_guard<std::mutex> lock(scheduler_mutex_);
@@ -1085,12 +1116,13 @@ public:
       dvc_run_id_ = oss.str();
     }
 
-    const std::string path = output_dir + "/dvc_sched_diag_" + dvc_run_id_ + ".csv";
-    dvc_sched_diag_stream_.open(path.c_str(), std::ios::out | std::ios::trunc);
+    dvc_sched_diag_path_ = output_dir + "/dvc_sched_diag_" + dvc_run_id_ + ".csv";
+    dvc_sched_diag_stream_.open(dvc_sched_diag_path_.c_str(), std::ios::out | std::ios::trunc);
     if (!dvc_sched_diag_stream_.good())
     {
-      ROS_WARN_STREAM("[scheduler] failed opening diagnostics file: " << path);
+      ROS_WARN_STREAM("[scheduler] failed opening diagnostics file: " << dvc_sched_diag_path_);
       scheduler_cfg_.enable_diag = false;
+      dvc_sched_diag_path_.clear();
       return;
     }
 
@@ -1103,6 +1135,55 @@ public:
         << "loader_backpressure_imu_depth,loader_backpressure_timeout,event_queue_wait_ms,worker_dispatch_ms,"
         << "update_publish_ms,diag_write_ms\n";
     dvc_sched_diag_stream_.flush();
+  }
+
+  static size_t csvColumnCount(const std::string& line)
+  {
+    return std::count(line.begin(), line.end(), ',') + 1;
+  }
+
+  void sanitizeSchedulerDiagFileTail()
+  {
+    if (dvc_sched_diag_path_.empty())
+      return;
+
+    std::ifstream in(dvc_sched_diag_path_.c_str(), std::ios::in);
+    if (!in.good())
+      return;
+
+    std::vector<std::string> lines;
+    lines.reserve(dvc_sched_diag_rows_ + 1);
+    std::string line;
+    while (std::getline(in, line))
+      lines.push_back(line);
+    in.close();
+
+    if (lines.size() <= 1)
+      return;
+
+    const size_t expected_cols = csvColumnCount(lines.front());
+    size_t removed_tail_rows = 0;
+    while (lines.size() > 1 && csvColumnCount(lines.back()) != expected_cols)
+    {
+      lines.pop_back();
+      removed_tail_rows++;
+    }
+
+    if (removed_tail_rows == 0)
+      return;
+
+    std::ofstream out(dvc_sched_diag_path_.c_str(), std::ios::out | std::ios::trunc);
+    if (!out.good())
+    {
+      ROS_WARN_STREAM("[scheduler] failed rewriting diagnostics file after tail cleanup: " << dvc_sched_diag_path_);
+      return;
+    }
+    for (const auto& row : lines)
+      out << row << "\n";
+    out.flush();
+    ROS_WARN_STREAM("[scheduler] removed " << removed_tail_rows
+                                           << " truncated tail row(s) from diagnostics file: "
+                                           << dvc_sched_diag_path_);
   }
 
   void writeSchedulerDiagRow(const SensorEvent& event,
@@ -1125,6 +1206,8 @@ public:
   {
     if (!scheduler_cfg_.enable_diag || !dvc_sched_diag_stream_.good())
       return;
+    if (!ros::ok() || ros::isShuttingDown())
+      return;
     if (!force_log && scheduler_mode_ != SchedulerMode::Legacy && !scheduler_cfg_.diag_log_all_events &&
         event.type != EventType::RadarScan && event.type != EventType::RadarTrigger)
     {
@@ -1139,20 +1222,22 @@ public:
         (std::isfinite(backend_ms) && std::isfinite(publish_ms)) ? (backend_ms + publish_ms) : std::numeric_limits<double>::quiet_NaN();
     const double diag_write_ms = last_diag_io_ms_;
 
+    std::ostringstream row;
+    row << dvc_sched_diag_rows_++ << "," << std::fixed << std::setprecision(9) << event.timestamp << ","
+        << event.enqueue_wall_time << "," << ros::WallTime::now().toSec() << "," << scheduler_cfg_.mode << ","
+        << eventTypeName(event.type) << "," << queue_depth << "," << event_latency_ms << "," << watermark_wait_ms
+        << "," << event_queue_stats_.dropped_total << "," << last_drop_type_ << "," << lock_wait_us << ","
+        << lock_hold_us << "," << radar_enqueue_to_commit_ms << "," << radar_starved << "," << queue_wait_us << ","
+        << select_ready_us << "," << worker_dispatch_us << "," << mfilter_lock_wait_us << ","
+        << mfilter_lock_hold_us << "," << reve_ms << "," << backend_ms << "," << publish_ms << ","
+        << last_diag_io_ms_ << "," << event.loader_backpressure_wait_ms << "," << event.loader_backpressure_reason
+        << "," << event.loader_backpressure_queue_depth << "," << event.loader_backpressure_imu_depth << ","
+        << event.loader_backpressure_timeout << "," << event_queue_wait_ms << "," << worker_dispatch_ms << ","
+        << update_publish_ms << "," << diag_write_ms << "\n";
+
+    const std::string row_str = row.str();
     const double t_diag_write_begin = ros::WallTime::now().toSec();
-    dvc_sched_diag_stream_ << dvc_sched_diag_rows_++ << "," << std::fixed << std::setprecision(9) << event.timestamp
-                           << "," << event.enqueue_wall_time << "," << ros::WallTime::now().toSec() << ","
-                           << scheduler_cfg_.mode << "," << eventTypeName(event.type) << "," << queue_depth << ","
-                           << event_latency_ms << "," << watermark_wait_ms << "," << event_queue_stats_.dropped_total
-                           << "," << last_drop_type_ << "," << lock_wait_us << "," << lock_hold_us << ","
-                           << radar_enqueue_to_commit_ms << "," << radar_starved << "," << queue_wait_us << ","
-                           << select_ready_us << "," << worker_dispatch_us << "," << mfilter_lock_wait_us << ","
-                           << mfilter_lock_hold_us << "," << reve_ms << "," << backend_ms << "," << publish_ms << ","
-                           << last_diag_io_ms_ << "," << event.loader_backpressure_wait_ms << ","
-                           << event.loader_backpressure_reason << "," << event.loader_backpressure_queue_depth << ","
-                           << event.loader_backpressure_imu_depth << "," << event.loader_backpressure_timeout << ","
-                           << event_queue_wait_ms << "," << worker_dispatch_ms << "," << update_publish_ms << ","
-                           << diag_write_ms << "\n";
+    dvc_sched_diag_stream_.write(row_str.c_str(), static_cast<std::streamsize>(row_str.size()));
 
     if (!isPerfMode() || (dvc_sched_diag_rows_ % static_cast<uint64_t>(std::max(1, perf_cfg_.diag_flush_every_n))) == 0 ||
         force_log)
@@ -1355,11 +1440,12 @@ public:
             continue;
           }
         }
-        const double remaining_wait_s = std::max(0.001, scheduler_cfg_.watermark_max_wait_s - longest_wait_s);
+        const double remaining_wait_s = std::max(0.0, scheduler_cfg_.watermark_max_wait_s - longest_wait_s);
+        const double wait_quantum_s = std::max(0.001, std::min(remaining_wait_s, 0.01));
         const uint64_t enqueued_before_wait = event_queue_stats_.enqueued;
         const double latest_imu_before_wait = latest_imu_time_;
         const auto t_wait_begin = ros::WallTime::now().toSec();
-        scheduler_cv_.wait_for(lock, std::chrono::duration<double>(remaining_wait_s), [&]() {
+        scheduler_cv_.wait_for(lock, std::chrono::duration<double>(wait_quantum_s), [&]() {
           return !worker_running_.load() || scheduler_drain_requested_.load() || event_queue_.empty() ||
                  event_queue_stats_.enqueued != enqueued_before_wait || latest_imu_time_ > latest_imu_before_wait;
         });
@@ -1530,10 +1616,7 @@ public:
       const double dispatch_end = ros::WallTime::now().toSec();
       const double worker_dispatch_us = std::max(0.0, (dispatch_end - dispatch_begin) * 1.0e6);
 
-      worker_processing_.store(false);
       active_radar_enqueue_wall_time_ = std::numeric_limits<double>::quiet_NaN();
-      event_queue_stats_.processed++;
-      scheduler_cv_.notify_all();
 
       writeSchedulerDiagRow(event,
                             queue_depth_after_pop,
@@ -1551,6 +1634,9 @@ public:
                             last_reve_ms_,
                             last_backend_ms_,
                             last_publish_ms_);
+      event_queue_stats_.processed++;
+      worker_processing_.store(false);
+      scheduler_cv_.notify_all();
     }
   }
 

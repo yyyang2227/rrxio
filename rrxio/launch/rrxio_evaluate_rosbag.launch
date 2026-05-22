@@ -29,6 +29,7 @@
     <arg name="dvc_diag_enabled" default="False"/>
     <arg name="dvc_diag_output_dir" default=""/>
     <arg name="dvc_run_id" default=""/>
+    <arg name="dvc_unified_config" default="$(find rrxio)/launch/configs/dvc_rrxio_unified_params.yaml"/>
     <arg name="dvc_cov_mode" default="base"/>
     <arg name="dvc_fixed_scale" default="2.0"/>
     <arg name="dvc_alpha_r_w_cond" default="0.7"/>
@@ -103,6 +104,7 @@
 
         <rosparam file="$(find rrxio)/launch/configs/default_params_radar_ego_velocity_estimation.yaml" command="load"/>
         <rosparam file="$(arg radar_calib)" command="load"/>
+        <rosparam file="$(arg dvc_unified_config)" command="load"/>
 
         <param name="world_frame" value="odom"/>
         <param name="imu_frame" value="base_link"/>

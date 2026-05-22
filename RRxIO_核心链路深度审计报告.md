@@ -222,8 +222,21 @@
 - 关键收益（`alpha_r` vs `base`）：
   - NIS 超限率：`5.7756% -> 2.2623%`（相对下降 `60.83%`，绝对下降 `3.513pp`）
   - ATE/RPE 中位数：未恶化
-  - 运行时中位数：`-0.48%`（未超预算）
+- 运行时中位数：`-0.48%`（未超预算）
 - 结果：W5-W6 已满足严格门禁，可标记 `DONE`
+
+6. W6 调度严格门禁复验（2026-05-22）：
+- `Gate-Scheduler`: `PASS`（`dvc_w6_fixdet_fast0_48_24_full/gate_scheduler_report.json`，退出码 `0`）
+- 全量覆盖：`9序列×2模态×legacy/event_stage2×3次`
+- 收敛配置：`imu_fast_path=0`、`backpressure=48/24`、`cov_mode=alpha_r`
+- 关键结果（event_stage2 vs legacy）：
+  - 时延：`median=9.07ms, p95=16.95ms, max=41.74ms`
+  - `ATE degrade=+1.23%`
+  - `RPE degrade=-2.91%`
+  - `runtime increase=-1.67%`
+  - `NIS abs increase=+0.367pp`
+  - `committed_drop=0.436%`
+  - `repeatability=PASS`，`radar_starved=0`
 
 ---
 
@@ -275,3 +288,15 @@
   - 真实数据门禁结果（`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w6_alpha_r`）：
     - `Gate-W6`: PASS
     - `run_manifest` 成功条目：162（54组，每组3次）
+- 2026-05-22（W6 调度确定性修正复验通过）：
+  - 代码延续 2026-05-22 的确定性修正链路，最终以 `imu_fast_path=0` 收敛通过同门禁配置。
+  - 小批目录：`dvc_w6_fixdet_fast0_48_24_smallbatch`（PASS）
+  - 全量目录：`dvc_w6_fixdet_fast0_48_24_full`（PASS）
+  - 严格门禁结果：`gate_scheduler_check.py` 退出码 `0` 且 `pass=true`。
+  - 收益：`event_stage2` 长尾时延与 `RPE degrade/repeatability` 同时收敛至阈值内。
+- 2026-05-22（统一参数输入落地）：
+  - 新增统一配置：`rrxio/launch/configs/dvc_rrxio_unified_params.yaml`。
+  - `rrxio_evaluate_rosbag.launch` 新增 `dvc_unified_config`，以单文件方式加载 DVC 参数。
+  - `evaluate_iros_datasets.py` 改为按 run 生成 `dvc_param_configs/dvc_params_<run_id>.yaml` 并注入 launch。
+  - `run_manifest.csv` 新增 `dvc_unified_config_file` 字段，实现参数输入的单源可追溯。
+  - 验证：`py_compile` 与 `catkin build rrxio` 均通过，最小冒烟运行成功。
