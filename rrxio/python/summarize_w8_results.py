@@ -153,9 +153,47 @@ def read_diag_stats(diag_file):
                     nis_exceed_count += 1
             if row.get("radar_update_committed", "").strip() == "1":
                 committed_count += 1
-            if row.get("s_k_valid", "").strip() == "1":
+            sk_applied = row.get("s_k_applied", "").strip()
+            if sk_applied == "":
+                sk_applied = row.get("s_k_valid", "").strip()
+            if sk_applied == "1":
                 sk_applied_count += 1
     return rows, nis_valid_count, nis_exceed_count, committed_count, sk_applied_count
+
+
+def read_diag_coverage(diag_file):
+    skip_reasons = defaultdict(int)
+    if not os.path.isfile(diag_file):
+        return {
+            "rows": 0,
+            "applied_rows": 0,
+            "obs_invalid_rows": 0,
+            "skip_reasons": skip_reasons,
+        }
+
+    rows = 0
+    applied_rows = 0
+    obs_invalid_rows = 0
+    with open(diag_file, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows += 1
+            sk_applied = row.get("s_k_applied", "").strip()
+            if sk_applied == "":
+                sk_applied = row.get("s_k_valid", "").strip()
+            if sk_applied == "1":
+                applied_rows += 1
+            reason = row.get("s_k_skip_reason", "").strip()
+            if reason:
+                skip_reasons[reason] += 1
+                if reason == "obs_invalid":
+                    obs_invalid_rows += 1
+    return {
+        "rows": rows,
+        "applied_rows": applied_rows,
+        "obs_invalid_rows": obs_invalid_rows,
+        "skip_reasons": skip_reasons,
+    }
 
 
 def read_sched_starved_count(path):
@@ -245,8 +283,11 @@ def main():
 
     metrics_csv = os.path.join(args.results_root, "w8_metrics.csv")
     summary_md = os.path.join(args.results_root, "w8_summary.md")
+    coverage_csv = os.path.join(args.results_root, "w8_coverage_by_group.csv")
 
     rows = []
+    coverage_rows = []
+    skip_reason_vocab = set()
     with open(manifest, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -271,6 +312,9 @@ def main():
             diag_file = row.get("diag_file", "")
             sched_diag_file = row.get("sched_diag_file", "")
             diag_rows, nis_valid_count, nis_exceed_count, committed_count, sk_applied_count = read_diag_stats(diag_file)
+            cov_stats = read_diag_coverage(diag_file)
+            for reason in cov_stats["skip_reasons"].keys():
+                skip_reason_vocab.add(reason)
             starved_count = read_sched_starved_count(sched_diag_file)
             nis_rate = float("nan")
             if nis_valid_count > 0:
@@ -299,6 +343,19 @@ def main():
                     "radar_update_committed_count": committed_count,
                     "radar_starved_count": starved_count,
                     "s_k_applied_count": sk_applied_count,
+                }
+            )
+            coverage_rows.append(
+                {
+                    "dataset": row.get("dataset", ""),
+                    "modality": row.get("modality", ""),
+                    "cov_mode": row.get("cov_mode", ""),
+                    "scheduler_mode": row.get("scheduler_mode", ""),
+                    "stage": row.get("stage", ""),
+                    "rows": cov_stats["rows"],
+                    "applied_rows": cov_stats["applied_rows"],
+                    "obs_invalid_rows": cov_stats["obs_invalid_rows"],
+                    "skip_reasons": cov_stats["skip_reasons"],
                 }
             )
 
@@ -337,6 +394,53 @@ def main():
     for row in rows:
         by_mode[row["cov_mode"]].append(row)
 
+    coverage_by_group = defaultdict(lambda: {"rows": 0, "applied_rows": 0, "obs_invalid_rows": 0, "skip_reasons": defaultdict(int)})
+    for c_row in coverage_rows:
+        key = (c_row["dataset"], c_row["modality"], c_row["cov_mode"], c_row["scheduler_mode"], c_row["stage"])
+        cov_group = coverage_by_group[key]
+        cov_group["rows"] += int(c_row["rows"])
+        cov_group["applied_rows"] += int(c_row["applied_rows"])
+        cov_group["obs_invalid_rows"] += int(c_row["obs_invalid_rows"])
+        for reason, count in c_row["skip_reasons"].items():
+            cov_group["skip_reasons"][reason] += int(count)
+
+    ordered_reasons = sorted(skip_reason_vocab)
+    coverage_header = [
+        "dataset",
+        "modality",
+        "cov_mode",
+        "scheduler_mode",
+        "stage",
+        "rows",
+        "applied_rows",
+        "applied_ratio",
+        "obs_invalid_rows",
+        "obs_invalid_ratio",
+    ] + ["skip_reason_%s" % reason for reason in ordered_reasons]
+    with open(coverage_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=coverage_header)
+        writer.writeheader()
+        for (dataset, modality, cov_mode, scheduler_mode, stage) in sorted(coverage_by_group.keys()):
+            group = coverage_by_group[(dataset, modality, cov_mode, scheduler_mode, stage)]
+            rows_total = int(group["rows"])
+            applied_rows = int(group["applied_rows"])
+            obs_invalid_rows = int(group["obs_invalid_rows"])
+            out = {
+                "dataset": dataset,
+                "modality": modality,
+                "cov_mode": cov_mode,
+                "scheduler_mode": scheduler_mode,
+                "stage": stage,
+                "rows": rows_total,
+                "applied_rows": applied_rows,
+                "applied_ratio": safe_rate(applied_rows, rows_total),
+                "obs_invalid_rows": obs_invalid_rows,
+                "obs_invalid_ratio": safe_rate(obs_invalid_rows, rows_total),
+            }
+            for reason in ordered_reasons:
+                out["skip_reason_%s" % reason] = int(group["skip_reasons"].get(reason, 0))
+            writer.writerow(out)
+
     with open(summary_md, "w", encoding="utf-8") as f:
         f.write("# W8 S_k Summary\n\n")
         f.write("stage: %s\n\n" % args.stage)
@@ -373,6 +477,7 @@ def main():
         print("[w8_summary] wrote: %s" % fig_rpe_p95)
     if fig_nis:
         print("[w8_summary] wrote: %s" % fig_nis)
+    print("[w8_summary] wrote: %s" % coverage_csv)
 
 
 if __name__ == "__main__":

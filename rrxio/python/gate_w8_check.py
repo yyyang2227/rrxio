@@ -63,6 +63,10 @@ def load_csv_rows(path):
         return list(csv.DictReader(f))
 
 
+def parse_name_set(raw):
+    return {item.strip() for item in str(raw).split(",") if item.strip()}
+
+
 def check_diag_file(path, require_sk_columns):
     info = {
         "path": path,
@@ -104,6 +108,15 @@ def check_diag_file(path, require_sk_columns):
                 "s3",
                 "trace_R_after_alpha",
                 "trace_R_after_sk",
+                "s_k_applied",
+                "s_k_skip_reason",
+                "sk_gate_lambda3_pass",
+                "sk_gate_d_r_pass",
+                "sk_gate_ntargets_pass",
+                "obs_trace",
+                "obs_aniso",
+                "sk_gate_obs_trace_pass",
+                "sk_gate_obs_aniso_pass",
             ]
         )
 
@@ -119,7 +132,13 @@ def check_diag_file(path, require_sk_columns):
 
         for row in reader:
             info["rows"] += 1
-            if text(row.get("s_k_valid", "")) != "1":
+            sk_applied = text(row.get("s_k_applied", ""))
+            if sk_applied == "":
+                sk_applied = text(row.get("s_k_valid", ""))
+            if sk_applied not in ("0", "1"):
+                info["sk_invalid_rows"] += 1
+                continue
+            if sk_applied != "1":
                 continue
             info["sk_rows"] += 1
             min_eig = row.get("minEig_R_used", "nan")
@@ -134,14 +153,66 @@ def check_diag_file(path, require_sk_columns):
                 continue
             if f64(s1) < 1.0 or f64(s2) < 1.0 or f64(s3) < 1.0:
                 info["sk_invalid_rows"] += 1
+            if text(row.get("s_k_skip_reason", "")) not in ("", "applied"):
+                info["sk_invalid_rows"] += 1
 
     if info["rows"] == 0:
         append_fail(failures, "diag file has no rows: %s" % path)
-    if require_sk_columns and info["sk_rows"] == 0:
-        append_fail(failures, "diag file has no s_k_valid=1 rows: %s" % path)
     if info["sk_invalid_rows"] > 0:
         append_fail(failures, "diag file has invalid S_k rows in %s: %d" % (path, info["sk_invalid_rows"]))
     return info, failures
+
+
+def check_coverage(coverage_rows, mode_sk, scheduler_mode, focus_datasets, exclude_datasets, min_applied_ratio,
+                   max_applied_ratio, max_obs_invalid_ratio, stage_filter):
+    failures = []
+    checked = []
+    for row in coverage_rows:
+        if text(row.get("cov_mode", "")).lower() != mode_sk:
+            continue
+        if scheduler_mode and text(row.get("scheduler_mode", "")).lower() != scheduler_mode:
+            continue
+        if stage_filter and text(row.get("stage", "")) != stage_filter:
+            continue
+        dataset = text(row.get("dataset", ""))
+        if dataset in exclude_datasets:
+            continue
+        if focus_datasets and dataset not in focus_datasets:
+            continue
+
+        rows = i64(row.get("rows", "0"))
+        applied_rows = i64(row.get("applied_rows", "0"))
+        applied_ratio = f64(row.get("applied_ratio", "nan"))
+        obs_invalid_ratio = f64(row.get("obs_invalid_ratio", "nan"))
+
+        record = {
+            "dataset": dataset,
+            "modality": text(row.get("modality", "")),
+            "rows": rows,
+            "applied_rows": applied_rows,
+            "applied_ratio": applied_ratio,
+            "obs_invalid_ratio": obs_invalid_ratio,
+        }
+        checked.append(record)
+
+        if rows <= 0:
+            append_fail(failures, "coverage rows<=0 at %s/%s" % (dataset, record["modality"]))
+            continue
+        if applied_rows <= 0:
+            append_fail(failures, "coverage applied_rows<=0 at %s/%s" % (dataset, record["modality"]))
+        if (not finite(applied_ratio)) or applied_ratio < min_applied_ratio or applied_ratio > max_applied_ratio:
+            append_fail(
+                failures,
+                "coverage applied_ratio out of range at %s/%s: got=%s need in [%.6f, %.6f]"
+                % (dataset, record["modality"], str(applied_ratio), min_applied_ratio, max_applied_ratio),
+            )
+        if (not finite(obs_invalid_ratio)) or obs_invalid_ratio > max_obs_invalid_ratio:
+            append_fail(
+                failures,
+                "coverage obs_invalid_ratio out of range at %s/%s: got=%s need <= %.6f"
+                % (dataset, record["modality"], str(obs_invalid_ratio), max_obs_invalid_ratio),
+            )
+    return checked, failures
 
 
 def check_sched_starved(path):
@@ -179,6 +250,13 @@ def main():
     parser.add_argument("--max_runtime_increase", type=float, default=0.15)
     parser.add_argument("--max_nis_abs_increase_pp", type=float, default=1.0)
     parser.add_argument("--max_committed_drop", type=float, default=0.05)
+    parser.add_argument("--coverage_gate_enable", action="store_true")
+    parser.add_argument("--coverage_csv", default="")
+    parser.add_argument("--coverage_focus_datasets", default="mocap_dark,mocap_dark_fast,indoor_floor")
+    parser.add_argument("--coverage_exclude_datasets", default="outdoor_street")
+    parser.add_argument("--min_applied_ratio_focus", type=float, default=0.03)
+    parser.add_argument("--max_applied_ratio_focus", type=float, default=0.40)
+    parser.add_argument("--max_obs_invalid_ratio_focus", type=float, default=0.70)
     args = parser.parse_args()
 
     manifest = args.manifest if args.manifest else os.path.join(args.results_root, "run_manifest.csv")
@@ -200,15 +278,24 @@ def main():
             "max_runtime_increase": args.max_runtime_increase,
             "max_nis_abs_increase_pp": args.max_nis_abs_increase_pp,
             "max_committed_drop": args.max_committed_drop,
+            "coverage_gate_enable": args.coverage_gate_enable,
+            "coverage_focus_datasets": args.coverage_focus_datasets,
+            "coverage_exclude_datasets": args.coverage_exclude_datasets,
+            "min_applied_ratio_focus": args.min_applied_ratio_focus,
+            "max_applied_ratio_focus": args.max_applied_ratio_focus,
+            "max_obs_invalid_ratio_focus": args.max_obs_invalid_ratio_focus,
         },
         "checks": {},
         "failures": [],
+        "strict_pass": False,
+        "coverage_pass": False,
         "pass": False,
     }
-    failures = []
+    strict_failures = []
+    coverage_failures = []
 
     if not os.path.isfile(manifest):
-        append_fail(failures, "manifest not found: %s" % manifest)
+        append_fail(strict_failures, "manifest not found: %s" % manifest)
         manifest_rows = []
     else:
         manifest_rows = load_csv_rows(manifest)
@@ -216,7 +303,7 @@ def main():
         manifest_rows = [r for r in manifest_rows if text(r.get("stage", "")) == args.stage_filter]
 
     if not os.path.isfile(metrics):
-        append_fail(failures, "metrics not found: %s" % metrics)
+        append_fail(strict_failures, "metrics not found: %s" % metrics)
         metric_rows = []
     else:
         metric_rows = load_csv_rows(metrics)
@@ -231,18 +318,18 @@ def main():
     mode_base = args.mode_base.strip().lower()
     mode_sk = args.mode_sk.strip().lower()
     if len(by_mode_manifest.get(mode_base, [])) == 0:
-        append_fail(failures, "no SUCCESS run for cov_mode=%s" % mode_base)
+        append_fail(strict_failures, "no SUCCESS run for cov_mode=%s" % mode_base)
     if len(by_mode_manifest.get(mode_sk, [])) == 0:
-        append_fail(failures, "no SUCCESS run for cov_mode=%s" % mode_sk)
+        append_fail(strict_failures, "no SUCCESS run for cov_mode=%s" % mode_sk)
 
     by_mode_metrics = defaultdict(list)
     for row in metric_rows:
         mode = text(row.get("cov_mode", "")).lower()
         by_mode_metrics[mode].append(row)
     if len(by_mode_metrics.get(mode_base, [])) == 0:
-        append_fail(failures, "no metrics rows for cov_mode=%s" % mode_base)
+        append_fail(strict_failures, "no metrics rows for cov_mode=%s" % mode_base)
     if len(by_mode_metrics.get(mode_sk, [])) == 0:
-        append_fail(failures, "no metrics rows for cov_mode=%s" % mode_sk)
+        append_fail(strict_failures, "no metrics rows for cov_mode=%s" % mode_sk)
 
     base_rows = by_mode_metrics.get(mode_base, [])
     sk_rows = by_mode_metrics.get(mode_sk, [])
@@ -295,28 +382,28 @@ def main():
 
     if (not finite(rpe_p95_improve)) or rpe_p95_improve < args.min_rpe_p95_improve:
         append_fail(
-            failures,
+            strict_failures,
             "rpe_p95 improvement failed: got=%s need >= %.6f"
             % (str(rpe_p95_improve), args.min_rpe_p95_improve),
         )
     if (not finite(ate_degrade)) or ate_degrade > args.max_ate_degrade:
-        append_fail(failures, "ATE degrade failed: got=%s need <= %.6f" % (str(ate_degrade), args.max_ate_degrade))
+        append_fail(strict_failures, "ATE degrade failed: got=%s need <= %.6f" % (str(ate_degrade), args.max_ate_degrade))
     if (not finite(rpe_degrade)) or rpe_degrade > args.max_rpe_degrade:
-        append_fail(failures, "RPE degrade failed: got=%s need <= %.6f" % (str(rpe_degrade), args.max_rpe_degrade))
+        append_fail(strict_failures, "RPE degrade failed: got=%s need <= %.6f" % (str(rpe_degrade), args.max_rpe_degrade))
     if (not finite(runtime_increase)) or runtime_increase > args.max_runtime_increase:
         append_fail(
-            failures,
+            strict_failures,
             "runtime increase failed: got=%s need <= %.6f" % (str(runtime_increase), args.max_runtime_increase),
         )
     if (not finite(nis_abs_inc_pp)) or nis_abs_inc_pp > args.max_nis_abs_increase_pp:
         append_fail(
-            failures,
+            strict_failures,
             "NIS absolute increase failed: got=%s pp need <= %.6f pp"
             % (str(nis_abs_inc_pp), args.max_nis_abs_increase_pp),
         )
     if (not finite(committed_drop)) or committed_drop > args.max_committed_drop:
         append_fail(
-            failures,
+            strict_failures,
             "committed drop failed: got=%s need <= %.6f" % (str(committed_drop), args.max_committed_drop),
         )
 
@@ -331,25 +418,49 @@ def main():
                 continue
             diag_info, local_failures = check_diag_file(diag_file, require_sk_cols)
             diag_checks.append(diag_info)
-            failures.extend(local_failures)
+            strict_failures.extend(local_failures)
             total_sk_rows += int(diag_info.get("sk_rows", 0))
 
             sched_diag_file = text(row.get("sched_diag_file", ""))
             if sched_diag_file:
                 starved_count, starved_failures = check_sched_starved(sched_diag_file)
                 total_starved += starved_count
-                failures.extend(starved_failures)
+                strict_failures.extend(starved_failures)
 
     report["checks"]["diag_files"] = diag_checks
     report["checks"]["total_radar_starved"] = total_starved
     report["checks"]["total_sk_rows"] = total_sk_rows
     if total_starved != 0:
-        append_fail(failures, "radar_starved must be 0, got=%d" % total_starved)
+        append_fail(strict_failures, "radar_starved must be 0, got=%d" % total_starved)
     if total_sk_rows <= 0:
-        append_fail(failures, "no s_k_valid rows observed in target mode")
+        append_fail(strict_failures, "no s_k_applied rows observed in target mode")
 
-    report["failures"] = failures
-    report["pass"] = len(failures) == 0
+    coverage_checked = []
+    coverage_file = args.coverage_csv if args.coverage_csv else os.path.join(args.results_root, "w8_coverage_by_group.csv")
+    if args.coverage_gate_enable:
+        if not os.path.isfile(coverage_file):
+            append_fail(coverage_failures, "coverage csv not found: %s" % coverage_file)
+        else:
+            coverage_rows = load_csv_rows(coverage_file)
+            coverage_checked, local_failures = check_coverage(
+                coverage_rows=coverage_rows,
+                mode_sk=mode_sk,
+                scheduler_mode="event_stage2",
+                focus_datasets=parse_name_set(args.coverage_focus_datasets),
+                exclude_datasets=parse_name_set(args.coverage_exclude_datasets),
+                min_applied_ratio=args.min_applied_ratio_focus,
+                max_applied_ratio=args.max_applied_ratio_focus,
+                max_obs_invalid_ratio=args.max_obs_invalid_ratio_focus,
+                stage_filter=args.stage_filter,
+            )
+            coverage_failures.extend(local_failures)
+    report["checks"]["coverage_file"] = coverage_file
+    report["checks"]["coverage_checked"] = coverage_checked
+
+    report["strict_pass"] = len(strict_failures) == 0
+    report["coverage_pass"] = len(coverage_failures) == 0 if args.coverage_gate_enable else True
+    report["failures"] = strict_failures + coverage_failures
+    report["pass"] = report["strict_pass"] and report["coverage_pass"]
 
     with open(report_json, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, ensure_ascii=False)

@@ -302,22 +302,50 @@
 - 结论：
   - W6 在“精度/一致性/时延/重复性”四维门禁下完成收敛，后续可进入 W7-W8。
 
-### 5.9 W7-W8（`S_k`）严格门禁状态（2026-05-22）
+### 5.9 W7-W8（`S_k`）严格门禁状态（2026-05-23）
 - 状态：`BLOCKED`（未通过严格 Gate-W8）
 - 已实施内容：
-  - REVE 导出观测几何矩阵与特征值到 `RadarEstimationDiag`。
-  - 节点侧新增 `cov_mode=alpha_r_sk`，实现 `R_used = S_k * (alpha_R * R_reve + sigma_min2 I) * S_k^T`，并统一 SPD 投影。
-  - 新增诊断列：`s_k_valid,lambda1_obs,lambda2_obs,lambda3_obs,s1,s2,s3,trace_R_after_alpha,trace_R_after_sk`。
+  - P0：REVE 导出观测几何后，统一到体坐标系再计算特征值供 `S_k` 使用。
+  - P1：`alpha_r_sk` 路径新增轻量激活门（`lambda3_obs/d_r/n_targets`）与显式跳过诊断。
+  - 节点侧实现 `R_used = S_k * (alpha_R * R_reve + sigma_min2 I) * S_k^T`，并统一 SPD 投影。
+  - 新增诊断列：`s_k_valid,s_k_applied,s_k_skip_reason,sk_gate_lambda3_pass,sk_gate_d_r_pass,sk_gate_ntargets_pass,lambda1_obs,lambda2_obs,lambda3_obs,s1,s2,s3,trace_R_after_alpha,trace_R_after_sk`。
   - 新增门禁与汇总脚本：`gate_w8_check.py`、`summarize_w8_results.py`。
 - 证据目录：
-  - baseline 参数：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w8_s_k_smallbatch`
-  - tuned 参数：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w8_s_k_smallbatch_tuned_c3`
-- 严格门禁结果（tuned-c3）：
-  - `rpe_p95_improve = -0.50%`（目标 `>=20%`，未达）
-  - 其余门禁项通过：`ATE/RPE` 未恶化、`runtime +5.60%`、`NIS` 改善、`committed` 不降、`radar_starved=0`
+  - S0：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w8_p0p2_s0_smallbatch`
+  - S1：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w8_p0p2_s1_smallbatch`
+  - S2：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w8_p0p2_s2_smallbatch`
+- 严格门禁结果（P2 三档）：
+  - S0：`rpe_p95_improve=-1.64%`（FAIL，仅该项失败）
+  - S1：`rpe_p95_improve=-1.30%` + `ATE degrade=+5.27%`（FAIL）
+  - S2：`rpe_p95_improve=-1.84%`（FAIL，仅该项失败）
+  - 共性：`total_sk_rows=2256`、`radar_starved=0`，但 `outdoor_street` 组 `s_k_applied_count=0`。
 - 结论：
-  - 当前 `S_k` 实现在本数据子集上能改善稳定性副项，但未提供目标级“退化段突跳”收益。
+  - 当前 `S_k` 实现在本数据子集上可维持大多数稳定性副项，但未产生目标级 `rpe_p95` 收益（严格阈值 `>=20%`）。
+  - 主要拖累组为 `indoor_floor/visual`，该组在三档参数下均为负向改善。
   - 按规则保持 `IN_PROGRESS/BLOCKED`，不得标记 `DONE`，且不进入 W9+。
+
+### 5.10 W7-W8 Gate重构收敛回合（2026-05-24）
+- 状态：`BLOCKED`（严格 Gate-W8 仍未通过）
+- 本回合执行顺序：
+  - 阶段A：`d_r × obs_trace` 网格预筛（`4×4`）
+  - 阶段B1：固定 Gate 后扫描 `c_obs ∈ {0.35,0.50,0.65}`
+  - 阶段B2：固定 `c_obs=0.35` 扫描 `tau_obs ∈ {6,8,10}`
+  - 阶段B3：固定 `c_obs=0.35,tau_obs=8` 扫描 `s_max ∈ {1.8,2.0,2.2}`
+- 关键证据文件：
+  - `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w8_stageA_prescan_results.csv`
+  - `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w8_stageB1_c_scan_smallbatch_results.csv`
+  - `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w8_stageB2_tau_scan_smallbatch_results.csv`
+  - `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w8_stageB3_smax_scan_smallbatch_results.csv`
+- 最优已验证组合（小批）：
+  - `d_r=0.70, obs_trace=55, c_obs=0.35, tau_obs=8, s_max in [1.8,2.2]`
+  - `coverage_pass=true`
+  - `rpe_p95_improve=+9.495%`
+- 失败点：
+  - 严格阈值要求 `rpe_p95_improve>=20%`，当前最优仍不足（`+9.495%`）。
+  - 其余副项（`ATE/RPE/runtime/NIS/committed_drop`）均在门限内，`radar_starved=0`。
+- 结论：
+  - 当前回合表明主约束已从“稳定性副项”转为“主效应幅度不足”。
+  - W7-W8 必须继续保持 `IN_PROGRESS/BLOCKED`，不得标记 `DONE`。
 
 ### 《边界警示》
 - 以上修正优先级遵循“先消除参数/调度不一致，再引入新统计模型”。
@@ -538,3 +566,13 @@ addUpdateMeas<2>(v, t_meas);
   - 其余项均满足：`ATE/RPE` 未恶化、`runtime +5.60%`、`NIS` 改善、`committed` 不降、`radar_starved=0`。
 - 状态变更：
   - W7-W8 保持 `IN_PROGRESS/BLOCKED`，不得标记 `DONE`，不进入 W9+。
+
+### 2026-05-24（v1.8）
+- 完成 W7-W8 Gate重构收敛回合（阶段A/B1/B2/B3）全流程小批验证：
+  - 阶段A：`d_r` 在 `0.70` 时 coverage 通过且有正向提升（`+1.304%`）；`0.80` 虽提升更高（`+4.082%`）但 coverage 失败；`0.90` 负提升。
+  - 阶段B1 最优：`c_obs=0.35`，`rpe_p95_improve=+9.495%`。
+  - 阶段B2 最优：`tau_obs=8`（优于 `6/10`）。
+  - 阶段B3：`s_max=1.8/2.0/2.2` 结果一致（均 `+9.495%`）。
+- 门禁结论：
+  - strict Gate-W8 仍 `FAIL`（主失败项：`rpe_p95_improve<20%`）。
+  - W7-W8 状态维持 `BLOCKED`，不得标记 `DONE`，不进入 W9+。

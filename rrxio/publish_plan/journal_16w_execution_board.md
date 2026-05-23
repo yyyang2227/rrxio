@@ -142,32 +142,56 @@ Gate-W6 关键指标（alpha_r vs base）：
 - W6 阶段“时延长尾 + ATE/RPE + repeatability”已在同一硬门禁下同时闭环。
 - W5-W6 阶段状态可标记为 `DONE`，允许推进 W7-W8。
 
-## 4.6 W7-W8 实施与门禁状态（2026-05-22）
+## 4.6 W7-W8 实施与门禁状态（2026-05-23）
 门禁脚本：`rrxio/python/gate_w8_check.py`（严格阈值：`rpe_p95_improve>=20%`）
 
 已完成实现资产：
-- REVE 导出观测几何（`U^T U` 与特征值）到 `RadarEstimationDiag`。
-- `RRxIONode` 新增 `cov_mode=alpha_r_sk` 路径：`alpha_R` 后执行 `S_k*R*S_k^T`，并统一 SPD 投影。
-- 统一配置新增 `dvc_rrxio/s_k/*`，评测脚本支持 `alpha_r_sk` 批量运行。
-- 新增 `summarize_w8_results.py`、`gate_w8_check.py` 与 `dvc_diag` 的 `S_k` 诊断列。
+- P0：REVE 侧将观测几何 `obs_ut_u` 统一到体坐标系后再参与 `S_k`（含特征值重算）。
+- P1：`alpha_r_sk` 路径新增轻量激活门（`lambda3_obs/d_r/n_targets`）与显式跳过诊断（`s_k_applied/s_k_skip_reason`）。
+- 统一配置与脚本已对齐：`evaluate_iros_datasets.py` 支持新增 `dvc_rrxio/s_k/*` 门控参数透传并落盘到 `run_manifest.csv`。
+- 新增与扩展：`summarize_w8_results.py`、`gate_w8_check.py`、`dvc_diag` 的 `S_k` 诊断列。
 
 小批门禁记录（`4序列×2模态×alpha_r/alpha_r_sk×3次`）：
 | 批次 | 结果目录 | 参数 | Gate | 关键结果 |
 |---|---|---|---|---|
-| W8-baseline | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w8_s_k_smallbatch` | `tau=8.0,c=1.5,s_max=3.0` | FAIL | `rpe_p95_improve=-10.42%`，`RPE degrade=+7.94%` |
-| W8-tuned-c3 | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w8_s_k_smallbatch_tuned_c3` | `tau=8.0,c=0.5,s_max=2.0` | FAIL | `rpe_p95_improve=-0.50%`（显著改善但未达 `>=20%`） |
+| W8-P2-S0 | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w8_p0p2_s0_smallbatch` | `tau=8.0,c=0.5,s_max=2.0` | FAIL | `rpe_p95_improve=-1.64%`，其余硬门禁通过 |
+| W8-P2-S1 | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w8_p0p2_s1_smallbatch` | `tau=6.0,c=0.4,s_max=1.8` | FAIL | `rpe_p95_improve=-1.30%`，`ATE degrade=+5.27%` 超阈 |
+| W8-P2-S2 | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w8_p0p2_s2_smallbatch` | `tau=10.0,c=0.6,s_max=2.2` | FAIL | `rpe_p95_improve=-1.84%`，其余硬门禁通过 |
 
-W8-tuned-c3 其余硬门禁（均通过）：
-- `ATE degrade=-7.21%`（改善）
-- `RPE degrade=-1.27%`（改善）
-- `runtime increase=+5.60%`（<=15%）
-- `NIS abs increase=-0.547pp`（<=1pp）
-- `committed_drop=-1.60%`（更新次数上升）
-- `radar_starved=0`
+P2 三档共性证据：
+- `total_sk_rows=2256`，`radar_starved=0`（三档一致）。
+- `outdoor_street` 组 `s_k_applied_count=0`（visual/thermal），该组对 `rpe_p95_improve` 无正贡献。
+- `indoor_floor/visual` 在三档中均出现负向 `rpe_p95` 改善，是当前主拖累段。
 
 阶段结论：
-- W7-W8 已完成代码落地与多轮实测，但严格 Gate-W8 仍未通过。
+- W7-W8 已完成 P0/P1 代码落地与 P2 三档小批实测，但严格 Gate-W8 仍未通过。
+- 三档均未满足 `rpe_p95_improve>=20%`，按规则不进入全量 `9×2×3`。
 - 当前状态必须保持 `BLOCKED`，不得标注 `DONE`。
+
+## 4.7 W7-W8 Gate重构收敛回合（2026-05-24）
+执行策略：`Gate重构 -> 覆盖率门禁 -> tau/c/s_max 顺序调参`（小批：`4序列×2模态×alpha_r/alpha_r_sk×3次`）。
+
+阶段A（Gate参数）结论：
+- 结果汇总：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w8_stageA_prescan_results.csv`
+- `d_r=0.70`：`coverage_pass=true`，`rpe_p95_improve=+1.304%`（四个 `obs_trace` 一致）。
+- `d_r=0.80`：`rpe_p95_improve=+4.082%`，但 `coverage_pass=false`（不满足覆盖率门禁）。
+- `d_r=0.90`：`rpe_p95_improve=-5.914%`，且 `coverage_pass=false`。
+
+阶段B1（`c_obs` 扫描）结论：
+- 结果汇总：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w8_stageB1_c_scan_smallbatch_results.csv`
+- 最优：`c_obs=0.35`，`coverage_pass=true`，`rpe_p95_improve=+9.495%`。
+
+阶段B2（`tau_obs` 扫描，固定 `c_obs=0.35`）结论：
+- 结果汇总：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w8_stageB2_tau_scan_smallbatch_results.csv`
+- 最优：`tau_obs=8`，`coverage_pass=true`，`rpe_p95_improve=+9.495%`。
+
+阶段B3（`s_max` 扫描，固定 `c_obs=0.35,tau_obs=8`）结论：
+- 结果汇总：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w8_stageB3_smax_scan_smallbatch_results.csv`
+- `s_max in {1.8,2.0,2.2}` 三档结果一致：`rpe_p95_improve=+9.495%`，`coverage_pass=true`。
+
+严格门禁结论：
+- 最优组合（`d_r=0.70, obs_trace=55, c_obs=0.35, tau_obs=8, s_max∈[1.8,2.2]`）仍未满足 strict 条件 `rpe_p95_improve>=20%`。
+- W7-W8 状态保持 `BLOCKED`，不得标注 `DONE`，不进入 W9+。
 
 ## 5. 目录与命名规范（统一结果资产）
 建议根目录：`<dataset_root>/results/dvc_rrxio_publish/`

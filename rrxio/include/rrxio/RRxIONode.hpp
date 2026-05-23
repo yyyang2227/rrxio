@@ -181,10 +181,16 @@ public:
   struct RadarSkConfig
   {
     bool enable      = false;
+    bool apply_gate_enable = true;
     double tau_obs   = 8.0;
     double c_obs     = 1.5;
     double s_max     = 3.0;
     double eps_lambda = 1.0e-6;
+    double lambda3_apply_max = 2.0;
+    double d_r_apply_min = 0.55;
+    double n_targets_apply_max = 40.0;
+    double obs_trace_apply_max = 1.0e12;
+    double obs_aniso_apply_min = 0.0;
   };
   RadarSkConfig radar_sk_cfg_;
 
@@ -196,11 +202,20 @@ public:
     double lambda1_obs = std::numeric_limits<double>::quiet_NaN();
     double lambda2_obs = std::numeric_limits<double>::quiet_NaN();
     double lambda3_obs = std::numeric_limits<double>::quiet_NaN();
+    double obs_trace = std::numeric_limits<double>::quiet_NaN();
+    double obs_aniso = std::numeric_limits<double>::quiet_NaN();
     double s1 = std::numeric_limits<double>::quiet_NaN();
     double s2 = std::numeric_limits<double>::quiet_NaN();
     double s3 = std::numeric_limits<double>::quiet_NaN();
     double trace_R_after_alpha = std::numeric_limits<double>::quiet_NaN();
     double trace_R_after_sk = std::numeric_limits<double>::quiet_NaN();
+    int s_k_applied = 0;
+    std::string s_k_skip_reason = "not_applicable";
+    int sk_gate_lambda3_pass = 0;
+    int sk_gate_d_r_pass = 0;
+    int sk_gate_ntargets_pass = 0;
+    int sk_gate_obs_trace_pass = 0;
+    int sk_gate_obs_aniso_pass = 0;
   };
 
   static constexpr double kChi2_3_95_ = 7.8147279;
@@ -472,10 +487,21 @@ public:
         "dvc_rrxio/alpha_r/alpha_r_max", radar_cov_recalib_cfg_.alpha_r_max, radar_cov_recalib_cfg_.alpha_r_max);
     nh_private_.param("dvc_rrxio/alpha_r/sigma_min2", radar_cov_recalib_cfg_.sigma_min2, radar_cov_recalib_cfg_.sigma_min2);
     nh_private_.param("dvc_rrxio/s_k/enable", radar_sk_cfg_.enable, radar_sk_cfg_.enable);
+    nh_private_.param(
+        "dvc_rrxio/s_k/apply_gate_enable", radar_sk_cfg_.apply_gate_enable, radar_sk_cfg_.apply_gate_enable);
     nh_private_.param("dvc_rrxio/s_k/tau_obs", radar_sk_cfg_.tau_obs, radar_sk_cfg_.tau_obs);
     nh_private_.param("dvc_rrxio/s_k/c_obs", radar_sk_cfg_.c_obs, radar_sk_cfg_.c_obs);
     nh_private_.param("dvc_rrxio/s_k/s_max", radar_sk_cfg_.s_max, radar_sk_cfg_.s_max);
     nh_private_.param("dvc_rrxio/s_k/eps_lambda", radar_sk_cfg_.eps_lambda, radar_sk_cfg_.eps_lambda);
+    nh_private_.param(
+        "dvc_rrxio/s_k/lambda3_apply_max", radar_sk_cfg_.lambda3_apply_max, radar_sk_cfg_.lambda3_apply_max);
+    nh_private_.param("dvc_rrxio/s_k/d_r_apply_min", radar_sk_cfg_.d_r_apply_min, radar_sk_cfg_.d_r_apply_min);
+    nh_private_.param(
+        "dvc_rrxio/s_k/n_targets_apply_max", radar_sk_cfg_.n_targets_apply_max, radar_sk_cfg_.n_targets_apply_max);
+    nh_private_.param(
+        "dvc_rrxio/s_k/obs_trace_apply_max", radar_sk_cfg_.obs_trace_apply_max, radar_sk_cfg_.obs_trace_apply_max);
+    nh_private_.param(
+        "dvc_rrxio/s_k/obs_aniso_apply_min", radar_sk_cfg_.obs_aniso_apply_min, radar_sk_cfg_.obs_aniso_apply_min);
     nh_private_.param("max_r_cond", radar_cov_recalib_cfg_.max_r_cond_ref, radar_cov_recalib_cfg_.max_r_cond_ref);
 
     std::transform(radar_cov_recalib_cfg_.cov_mode.begin(),
@@ -540,6 +566,26 @@ public:
     if (radar_sk_cfg_.eps_lambda <= 0.0)
     {
       throw std::runtime_error("dvc_rrxio/s_k/eps_lambda must be > 0.");
+    }
+    if (!(std::isfinite(radar_sk_cfg_.lambda3_apply_max) && radar_sk_cfg_.lambda3_apply_max > 0.0))
+    {
+      throw std::runtime_error("dvc_rrxio/s_k/lambda3_apply_max must be finite and > 0.");
+    }
+    if (!(std::isfinite(radar_sk_cfg_.d_r_apply_min) && radar_sk_cfg_.d_r_apply_min >= 0.0))
+    {
+      throw std::runtime_error("dvc_rrxio/s_k/d_r_apply_min must be finite and >= 0.");
+    }
+    if (!(std::isfinite(radar_sk_cfg_.n_targets_apply_max) && radar_sk_cfg_.n_targets_apply_max > 0.0))
+    {
+      throw std::runtime_error("dvc_rrxio/s_k/n_targets_apply_max must be finite and > 0.");
+    }
+    if (!(std::isfinite(radar_sk_cfg_.obs_trace_apply_max) && radar_sk_cfg_.obs_trace_apply_max > 0.0))
+    {
+      throw std::runtime_error("dvc_rrxio/s_k/obs_trace_apply_max must be finite and > 0.");
+    }
+    if (!(std::isfinite(radar_sk_cfg_.obs_aniso_apply_min) && radar_sk_cfg_.obs_aniso_apply_min >= 0.0))
+    {
+      throw std::runtime_error("dvc_rrxio/s_k/obs_aniso_apply_min must be finite and >= 0.");
     }
     if (radar_cov_recalib_cfg_.max_r_cond_ref <= 1.0)
     {
@@ -856,6 +902,7 @@ public:
     if (mode == "base")
     {
       cov_diag.alpha_r = 1.0;
+      cov_diag.s_k_skip_reason = "mode_no_sk";
       const bool ok = regularizeCovariance(cov_used, radar_cov_recalib_cfg_.sigma_min2);
       if (ok)
       {
@@ -868,6 +915,7 @@ public:
     if (mode == "fixed")
     {
       cov_diag.alpha_r = radar_cov_recalib_cfg_.fixed_scale;
+      cov_diag.s_k_skip_reason = "mode_no_sk";
       cov_used = cov_diag.alpha_r * cov_reve + radar_cov_recalib_cfg_.sigma_min2 * I;
       const bool ok = regularizeCovariance(cov_used, radar_cov_recalib_cfg_.sigma_min2);
       if (ok)
@@ -907,12 +955,14 @@ public:
     {
       cov_used = cov_alpha;
       cov_diag.trace_R_after_sk = cov_used.trace();
+      cov_diag.s_k_skip_reason = "mode_alpha_r";
       return true;
     }
 
     cov_used = cov_alpha;
     if (!radar_sk_cfg_.enable || !diag.obs_valid || !diag.obs_ut_u.allFinite())
     {
+      cov_diag.s_k_skip_reason = !radar_sk_cfg_.enable ? "sk_disabled" : "obs_invalid";
       cov_diag.trace_R_after_sk = cov_used.trace();
       return true;
     }
@@ -922,11 +972,53 @@ public:
     Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(G);
     if (es.info() != Eigen::Success || !es.eigenvalues().allFinite() || !es.eigenvectors().allFinite())
     {
+      cov_diag.s_k_skip_reason = "obs_eig_fail";
       cov_diag.trace_R_after_sk = cov_used.trace();
       return true;
     }
 
     const Eigen::Vector3d evals = es.eigenvalues();
+    cov_diag.lambda1_obs = evals(2);
+    cov_diag.lambda2_obs = evals(1);
+    cov_diag.lambda3_obs = evals(0);
+    cov_diag.obs_trace = cov_diag.lambda1_obs + cov_diag.lambda2_obs + cov_diag.lambda3_obs;
+    cov_diag.obs_aniso =
+        (cov_diag.lambda1_obs - cov_diag.lambda3_obs) / (cov_diag.lambda1_obs + radar_sk_cfg_.eps_lambda);
+
+    if (radar_sk_cfg_.apply_gate_enable)
+    {
+      cov_diag.sk_gate_lambda3_pass = cov_diag.lambda3_obs <= radar_sk_cfg_.lambda3_apply_max ? 1 : 0;
+      cov_diag.sk_gate_d_r_pass = cov_diag.d_r >= radar_sk_cfg_.d_r_apply_min ? 1 : 0;
+      cov_diag.sk_gate_ntargets_pass =
+          static_cast<double>(diag.n_targets) <= radar_sk_cfg_.n_targets_apply_max ? 1 : 0;
+      cov_diag.sk_gate_obs_trace_pass = cov_diag.obs_trace <= radar_sk_cfg_.obs_trace_apply_max ? 1 : 0;
+      cov_diag.sk_gate_obs_aniso_pass = cov_diag.obs_aniso >= radar_sk_cfg_.obs_aniso_apply_min ? 1 : 0;
+      if (cov_diag.sk_gate_lambda3_pass == 0 || cov_diag.sk_gate_d_r_pass == 0 || cov_diag.sk_gate_ntargets_pass == 0 ||
+          cov_diag.sk_gate_obs_trace_pass == 0 || cov_diag.sk_gate_obs_aniso_pass == 0)
+      {
+        if (cov_diag.sk_gate_lambda3_pass == 0)
+          cov_diag.s_k_skip_reason = "gate_lambda3";
+        else if (cov_diag.sk_gate_d_r_pass == 0)
+          cov_diag.s_k_skip_reason = "gate_d_r";
+        else if (cov_diag.sk_gate_ntargets_pass == 0)
+          cov_diag.s_k_skip_reason = "gate_n_targets";
+        else if (cov_diag.sk_gate_obs_trace_pass == 0)
+          cov_diag.s_k_skip_reason = "gate_obs_trace";
+        else
+          cov_diag.s_k_skip_reason = "gate_obs_aniso";
+        cov_diag.trace_R_after_sk = cov_used.trace();
+        return true;
+      }
+    }
+    else
+    {
+      cov_diag.sk_gate_lambda3_pass = 1;
+      cov_diag.sk_gate_d_r_pass = 1;
+      cov_diag.sk_gate_ntargets_pass = 1;
+      cov_diag.sk_gate_obs_trace_pass = 1;
+      cov_diag.sk_gate_obs_aniso_pass = 1;
+    }
+
     const Eigen::Matrix3d V = es.eigenvectors();
     Eigen::Vector3d s_values;
     for (int i = 0; i < 3; ++i)
@@ -939,14 +1031,14 @@ public:
     Eigen::Matrix3d cov_sk = S_k * cov_alpha * S_k.transpose();
     if (!regularizeCovariance(cov_sk, radar_cov_recalib_cfg_.sigma_min2))
     {
+      cov_diag.s_k_skip_reason = "sk_cov_regularize_fail";
       cov_diag.trace_R_after_sk = cov_used.trace();
       return true;
     }
 
     cov_diag.s_k_valid = 1;
-    cov_diag.lambda1_obs = evals(2);
-    cov_diag.lambda2_obs = evals(1);
-    cov_diag.lambda3_obs = evals(0);
+    cov_diag.s_k_applied = 1;
+    cov_diag.s_k_skip_reason = "applied";
     cov_diag.s1 = s_values(2);
     cov_diag.s2 = s_values(1);
     cov_diag.s3 = s_values(0);
@@ -993,7 +1085,9 @@ public:
     dvc_diag_stream_ << "timestamp,cond,inlier_ratio,trace_R_used,minEig_R_used,use_radar_update,runtime_reve_ms,"
                         "runtime_backend_ms,radar_scan_callback_count,row_id,cov_mode,d_r,alpha_r,n_targets,n_inliers,"
                         "nis_vel,nis_valid,nis_exceed_95,radar_update_committed,s_k_valid,lambda1_obs,lambda2_obs,"
-                        "lambda3_obs,s1,s2,s3,trace_R_after_alpha,trace_R_after_sk\n";
+                        "lambda3_obs,obs_trace,obs_aniso,s1,s2,s3,trace_R_after_alpha,trace_R_after_sk,s_k_applied,"
+                        "s_k_skip_reason,sk_gate_lambda3_pass,sk_gate_d_r_pass,sk_gate_ntargets_pass,"
+                        "sk_gate_obs_trace_pass,sk_gate_obs_aniso_pass\n";
     dvc_diag_stream_.flush();
     ROS_INFO_STREAM("[dvc_diag] Logging enabled: " << diag_file);
   }
@@ -1034,8 +1128,13 @@ public:
                      << cov_mode << "," << cov_diag.d_r << "," << cov_diag.alpha_r << "," << diag.n_targets << ","
                      << diag.n_inliers << "," << nis_vel << "," << nis_valid << "," << nis_exceed_95 << ","
                      << radar_update_committed << "," << cov_diag.s_k_valid << "," << cov_diag.lambda1_obs << ","
-                     << cov_diag.lambda2_obs << "," << cov_diag.lambda3_obs << "," << cov_diag.s1 << "," << cov_diag.s2
-                     << "," << cov_diag.s3 << "," << cov_diag.trace_R_after_alpha << "," << cov_diag.trace_R_after_sk
+                     << cov_diag.lambda2_obs << "," << cov_diag.lambda3_obs << "," << cov_diag.obs_trace << ","
+                     << cov_diag.obs_aniso << "," << cov_diag.s1 << "," << cov_diag.s2 << "," << cov_diag.s3 << ","
+                     << cov_diag.trace_R_after_alpha << "," << cov_diag.trace_R_after_sk << "," << cov_diag.s_k_applied
+                     << "," << cov_diag.s_k_skip_reason << ","
+                     << cov_diag.sk_gate_lambda3_pass << "," << cov_diag.sk_gate_d_r_pass << ","
+                     << cov_diag.sk_gate_ntargets_pass << "," << cov_diag.sk_gate_obs_trace_pass << ","
+                     << cov_diag.sk_gate_obs_aniso_pass
                      << "\n";
     dvc_diag_stream_.flush();
   }

@@ -17,6 +17,7 @@ import argparse
 import csv
 import datetime as dt
 import os
+import signal
 import subprocess
 import time
 
@@ -35,6 +36,53 @@ def _git_rev(path):
 def _ensure_dir(path):
     if not os.path.isdir(path):
         os.makedirs(path)
+
+
+def _cleanup_ros_processes():
+    patterns = [
+        "roslaunch rrxio rrxio_evaluate_rosbag.launch",
+        "rrxio_rosbag_loader_",
+        "evaluate_ground_truth.py",
+    ]
+    try:
+        ps_output = subprocess.check_output(["ps", "-eo", "pid=,cmd="], text=True)
+    except Exception:
+        return
+
+    protected = {os.getpid(), os.getppid()}
+    target_pids = []
+    for line in ps_output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        pid = int(parts[0])
+        cmd = parts[1]
+        if pid in protected:
+            continue
+        if any(pattern in cmd for pattern in patterns):
+            target_pids.append(pid)
+
+    if not target_pids:
+        return
+
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        alive = []
+        for pid in target_pids:
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                continue
+            except PermissionError:
+                continue
+            else:
+                alive.append(pid)
+        if not alive:
+            break
+        target_pids = alive
+        time.sleep(0.2)
 
 
 def _csv_column_count(line):
@@ -73,6 +121,8 @@ def _append_manifest_row(manifest_csv, row):
         "git_rev_root", "git_rev_reve", "cov_mode", "scheduler_mode", "config_tag", "dvc_unified_config_file",
         "status", "owner", "note",
         "runtime_s", "export_directory", "diag_file", "sched_diag_file", "perf_mode_requested", "perf_mode_effective",
+        "dvc_sk_apply_gate_enable", "dvc_sk_lambda3_apply_max", "dvc_sk_d_r_apply_min", "dvc_sk_n_targets_apply_max",
+        "dvc_sk_obs_trace_apply_max", "dvc_sk_obs_aniso_apply_min",
         "dvc_scheduler_max_events", "dvc_scheduler_backpressure_depth", "dvc_scheduler_backpressure_high",
         "dvc_scheduler_backpressure_low", "dvc_scheduler_backpressure_timeout_s", "dvc_scheduler_imu_fast_path"
     ]
@@ -121,10 +171,16 @@ def _write_dvc_unified_config(path,
         "    sigma_min2: {sigma_min2}\n"
         "  s_k:\n"
         "    enable: {sk_enable}\n"
+        "    apply_gate_enable: {sk_apply_gate_enable}\n"
         "    tau_obs: {sk_tau_obs}\n"
         "    c_obs: {sk_c_obs}\n"
         "    s_max: {sk_s_max}\n"
         "    eps_lambda: {sk_eps_lambda}\n"
+        "    lambda3_apply_max: {sk_lambda3_apply_max}\n"
+        "    d_r_apply_min: {sk_d_r_apply_min}\n"
+        "    n_targets_apply_max: {sk_n_targets_apply_max}\n"
+        "    obs_trace_apply_max: {sk_obs_trace_apply_max}\n"
+        "    obs_aniso_apply_min: {sk_obs_aniso_apply_min}\n"
         "\n"
         "  scheduler:\n"
         "    mode: {scheduler_mode}\n"
@@ -164,10 +220,16 @@ def _write_dvc_unified_config(path,
         alpha_r_max=args.dvc_alpha_r_alpha_r_max,
         sigma_min2=args.dvc_alpha_r_sigma_min2,
         sk_enable=_yaml_bool(args.dvc_sk_enable),
+        sk_apply_gate_enable=_yaml_bool(args.dvc_sk_apply_gate_enable),
         sk_tau_obs=args.dvc_sk_tau_obs,
         sk_c_obs=args.dvc_sk_c_obs,
         sk_s_max=args.dvc_sk_s_max,
         sk_eps_lambda=args.dvc_sk_eps_lambda,
+        sk_lambda3_apply_max=args.dvc_sk_lambda3_apply_max,
+        sk_d_r_apply_min=args.dvc_sk_d_r_apply_min,
+        sk_n_targets_apply_max=args.dvc_sk_n_targets_apply_max,
+        sk_obs_trace_apply_max=args.dvc_sk_obs_trace_apply_max,
+        sk_obs_aniso_apply_min=args.dvc_sk_obs_aniso_apply_min,
         scheduler_mode=_yaml_quote(scheduler_mode),
         max_events=args.dvc_scheduler_max_events,
         watermark_margin_s=args.dvc_scheduler_watermark_margin_s,
@@ -194,6 +256,8 @@ def _write_dvc_unified_config(path,
 
 
 def run_feature(args, n_feature, git_rev_root, git_rev_reve):
+    if args.cleanup_ros_processes:
+        _cleanup_ros_processes()
     result_base_directory = os.path.join(args.results_root, "N_" + str(n_feature))
     _ensure_dir(result_base_directory)
 
@@ -353,6 +417,8 @@ def run_feature(args, n_feature, git_rev_root, git_rev_reve):
                             t0 = time.time()
                             rc = os.system(cmd + (" >/dev/null 2>&1" if args.suppress_console_output else ""))
                             runtime_s = time.time() - t0
+                            if args.cleanup_ros_processes:
+                                _cleanup_ros_processes()
 
                             status = "SUCCESS" if rc == 0 else "FAILED"
                             diag_file = os.path.join(diag_output_dir, "dvc_diag_" + run_id + ".csv")
@@ -397,6 +463,12 @@ def run_feature(args, n_feature, git_rev_root, git_rev_reve):
                                     "sched_diag_file": sched_diag_file,
                                     "perf_mode_requested": args.dvc_perf_mode,
                                     "perf_mode_effective": perf_mode_effective,
+                                    "dvc_sk_apply_gate_enable": int(args.dvc_sk_apply_gate_enable),
+                                    "dvc_sk_lambda3_apply_max": args.dvc_sk_lambda3_apply_max,
+                                    "dvc_sk_d_r_apply_min": args.dvc_sk_d_r_apply_min,
+                                    "dvc_sk_n_targets_apply_max": args.dvc_sk_n_targets_apply_max,
+                                    "dvc_sk_obs_trace_apply_max": args.dvc_sk_obs_trace_apply_max,
+                                    "dvc_sk_obs_aniso_apply_min": args.dvc_sk_obs_aniso_apply_min,
                                     "dvc_scheduler_max_events": args.dvc_scheduler_max_events,
                                     "dvc_scheduler_backpressure_depth": args.dvc_scheduler_backpressure_depth,
                                     "dvc_scheduler_backpressure_high": args.dvc_scheduler_backpressure_high,
@@ -485,10 +557,16 @@ def main():
     parser.add_argument("--dvc_alpha_r_alpha_r_max", type=float, default=5.0)
     parser.add_argument("--dvc_alpha_r_sigma_min2", type=float, default=1.0e-4)
     parser.add_argument("--dvc_sk_enable", type=int, default=0, help="1 to enable directional S_k shaping, 0 to disable")
+    parser.add_argument("--dvc_sk_apply_gate_enable", type=int, default=1, help="1 to enable S_k apply gate, 0 to disable")
     parser.add_argument("--dvc_sk_tau_obs", type=float, default=8.0)
     parser.add_argument("--dvc_sk_c_obs", type=float, default=1.5)
     parser.add_argument("--dvc_sk_s_max", type=float, default=3.0)
     parser.add_argument("--dvc_sk_eps_lambda", type=float, default=1.0e-6)
+    parser.add_argument("--dvc_sk_lambda3_apply_max", type=float, default=2.0)
+    parser.add_argument("--dvc_sk_d_r_apply_min", type=float, default=0.55)
+    parser.add_argument("--dvc_sk_n_targets_apply_max", type=float, default=40.0)
+    parser.add_argument("--dvc_sk_obs_trace_apply_max", type=float, default=1.0e12)
+    parser.add_argument("--dvc_sk_obs_aniso_apply_min", type=float, default=0.0)
     parser.add_argument("--scheduler_modes", default="legacy", help="Comma-separated scheduler modes")
     parser.add_argument("--dvc_scheduler_max_events", type=int, default=2048)
     parser.add_argument("--dvc_scheduler_watermark_margin_s", type=float, default=0.002)
@@ -507,6 +585,12 @@ def main():
     parser.add_argument("--dvc_perf_tf_decimation", type=int, default=2)
     parser.add_argument("--dvc_perf_diag_flush_every_n", type=int, default=32)
     parser.add_argument("--datasets", default="", help="Comma-separated dataset names")
+    parser.add_argument(
+        "--cleanup_ros_processes",
+        type=int,
+        default=1,
+        help="1 to kill stale roslaunch/rrxio loader/eval processes before and after each run.",
+    )
     args = parser.parse_args()
 
     args.rosbag_dir = args.rosbag_dir if args.rosbag_dir.endswith("/") else args.rosbag_dir + "/"
@@ -525,6 +609,8 @@ def main():
         if mode not in ("base", "fixed", "alpha_r", "alpha_r_sk"):
             raise RuntimeError("Unsupported cov mode: %s" % mode)
     args.dvc_sk_enable = int(args.dvc_sk_enable) != 0
+    args.dvc_sk_apply_gate_enable = int(args.dvc_sk_apply_gate_enable) != 0
+    args.cleanup_ros_processes = int(args.cleanup_ros_processes) != 0
     if args.dvc_sk_tau_obs <= 0.0:
         raise RuntimeError("dvc_sk_tau_obs must be > 0.")
     if args.dvc_sk_c_obs < 0.0:
@@ -533,6 +619,16 @@ def main():
         raise RuntimeError("dvc_sk_s_max must be >= 1.")
     if args.dvc_sk_eps_lambda <= 0.0:
         raise RuntimeError("dvc_sk_eps_lambda must be > 0.")
+    if args.dvc_sk_lambda3_apply_max <= 0.0:
+        raise RuntimeError("dvc_sk_lambda3_apply_max must be > 0.")
+    if args.dvc_sk_d_r_apply_min < 0.0:
+        raise RuntimeError("dvc_sk_d_r_apply_min must be >= 0.")
+    if args.dvc_sk_n_targets_apply_max <= 0.0:
+        raise RuntimeError("dvc_sk_n_targets_apply_max must be > 0.")
+    if args.dvc_sk_obs_trace_apply_max <= 0.0:
+        raise RuntimeError("dvc_sk_obs_trace_apply_max must be > 0.")
+    if args.dvc_sk_obs_aniso_apply_min < 0.0:
+        raise RuntimeError("dvc_sk_obs_aniso_apply_min must be >= 0.")
     args.scheduler_modes = [m.strip().lower() for m in args.scheduler_modes.split(",") if m.strip()]
     if not args.scheduler_modes:
         raise RuntimeError("No scheduler mode provided.")

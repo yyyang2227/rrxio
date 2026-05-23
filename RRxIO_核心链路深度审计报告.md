@@ -238,13 +238,23 @@
   - `committed_drop=0.436%`
   - `repeatability=PASS`，`radar_starved=0`
 
-7. W7-W8（`S_k`）严格门禁状态（2026-05-22）：
-- 已完成：`alpha_r_sk` 协方差链路、REVE 观测几何导出、W8 诊断列与 Gate 脚本。
-- 小批结果（默认参数）：`dvc_w8_s_k_smallbatch`，`Gate-W8=FAIL`。
-- 小批结果（调优参数）：`dvc_w8_s_k_smallbatch_tuned_c3`，`Gate-W8=FAIL`。
-- 当前最优失败项仅剩：`rpe_p95_improve=-0.50%`（目标 `>=20%` 未达）。
-- 其余约束通过：`ATE/RPE` 未恶化、`runtime +5.60%`、`NIS` 改善、`committed` 不降、`radar_starved=0`。
-- 结论：W7-W8 状态必须保持 `BLOCKED`，不得标注 `DONE`。
+7. W7-W8（`S_k`）严格门禁状态（2026-05-23）：
+- 已完成：P0（观测几何坐标一致性修正）+ P1（轻量激活门与显式跳过诊断）+ P2（三档小批参数收敛实验）。
+- 小批结果 S0：`dvc_w8_p0p2_s0_smallbatch`，`Gate-W8=FAIL`（`rpe_p95_improve=-1.64%`）。
+- 小批结果 S1：`dvc_w8_p0p2_s1_smallbatch`，`Gate-W8=FAIL`（`rpe_p95_improve=-1.30%`，`ATE degrade=+5.27%` 超阈）。
+- 小批结果 S2：`dvc_w8_p0p2_s2_smallbatch`，`Gate-W8=FAIL`（`rpe_p95_improve=-1.84%`）。
+- 共性证据：`total_sk_rows=2256`，`radar_starved=0`；`outdoor_street` 组 `s_k_applied_count=0`，`indoor_floor/visual` 为主要负向贡献组。
+- 结论：W7-W8 状态必须保持 `BLOCKED`，不得标注 `DONE`，且不进入 W9+。
+
+8. W7-W8 Gate重构收敛回合（2026-05-24）：
+- 阶段A（Gate预筛，`d_r × obs_trace`）：
+  - `d_r=0.70`：`coverage_pass=true`，`rpe_p95_improve=+1.304%`（四个 `obs_trace` 一致）
+  - `d_r=0.80`：`rpe_p95_improve=+4.082%`，但 `coverage_pass=false`
+  - `d_r=0.90`：`rpe_p95_improve=-5.914%`，且 `coverage_pass=false`
+- 阶段B1（`c_obs`）：最优 `c_obs=0.35`，`rpe_p95_improve=+9.495%`
+- 阶段B2（`tau_obs`）：最优 `tau_obs=8`（`+9.495%`），`tau=6/10` 更差
+- 阶段B3（`s_max`）：`1.8/2.0/2.2` 三档结果一致（均 `+9.495%`）
+- 结论：严格门禁主失败项仍是 `rpe_p95_improve<20%`，W7-W8 继续保持 `BLOCKED`。
 
 ---
 
@@ -313,3 +323,12 @@
   - 脚本稳健性：`summarize_w8_results.py` / `gate_w8_check.py` 增加 `stage_filter`，避免多轮结果混入误判。
   - 实验：`dvc_w8_s_k_smallbatch` 与 `dvc_w8_s_k_smallbatch_tuned_c3` 两轮 `4序列×2模态×2模式×3次` 门禁均未通过。
   - 当前最优：`rpe_p95_improve=-0.50%`（未达 `>=20%`）；W7-W8 状态保持 `BLOCKED`。
+- 2026-05-23（W7-W8 P0/P1/P2 收敛回合）：
+  - 代码：REVE 观测几何统一到体坐标；`alpha_r_sk` 新增 apply-gate 与 `s_k_applied/s_k_skip_reason` 诊断；脚本和统一参数透传对齐。
+  - 验证：`catkin build rrxio` 与 `py_compile` 均通过；P2 三档小批门禁均完成（S0/S1/S2）。
+  - 结果：三档均未满足 `rpe_p95_improve>=20%`；其中 S1 额外触发 `ATE degrade` 超阈；W7-W8 保持 `BLOCKED`。
+- 2026-05-24（W7-W8 Gate重构收敛回合）：
+  - 执行：完成阶段A/B1/B2/B3 顺序调参与严格小批门禁验证。
+  - 最优小批组合：`d_r=0.70, obs_trace=55, c_obs=0.35, tau_obs=8, s_max∈[1.8,2.2]`。
+  - 最优指标：`rpe_p95_improve=+9.495%`（其余副项通过，`radar_starved=0`）。
+  - 结论：仍未达到 strict `rpe_p95_improve>=20%`，W7-W8 状态保持 `BLOCKED`。

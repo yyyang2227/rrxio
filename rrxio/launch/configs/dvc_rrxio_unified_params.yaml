@@ -18,10 +18,16 @@ dvc_rrxio:
     sigma_min2: 0.0001              # Minimum variance floor for SPD protection.
   s_k:
     enable: false                   # Enable directional S_k covariance shaping on top of alpha_R.
+    apply_gate_enable: true         # Enable light-weight S_k apply gate (lambda3/d_r/n_targets conditions).
     tau_obs: 8.0                    # Observability eigenvalue threshold for weak-direction inflation.
     c_obs: 1.5                      # Gain applied to weak-direction inflation.
     s_max: 3.0                      # Upper bound of directional inflation factor s_i.
     eps_lambda: 0.000001            # Numerical epsilon added to U^T U before eigendecomposition.
+    lambda3_apply_max: 2.0          # Apply S_k only when weakest observability eigenvalue is <= this threshold.
+    d_r_apply_min: 0.55             # Apply S_k only when alpha_R degradation score d_r is >= this threshold.
+    n_targets_apply_max: 40.0       # Apply S_k only when radar target count is <= this threshold.
+    obs_trace_apply_max: 1000000000000.0  # Apply S_k only when observability trace is <= this threshold (large default disables).
+    obs_aniso_apply_min: 0.0        # Apply S_k only when observability anisotropy is >= this threshold.
 
   scheduler:
     mode: "legacy"                  # Scheduler mode: legacy | event_stage1 | event_stage2.
