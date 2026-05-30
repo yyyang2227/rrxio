@@ -322,7 +322,8 @@
 - 结论：
   - 当前 `S_k` 实现在本数据子集上可维持大多数稳定性副项，但未产生目标级 `rpe_p95` 收益（严格阈值 `>=20%`）。
   - 主要拖累组为 `indoor_floor/visual`，该组在三档参数下均为负向改善。
-  - 按规则保持 `IN_PROGRESS/BLOCKED`，不得标记 `DONE`，且不进入 W9+。
+  - 按规则保持 `IN_PROGRESS/BLOCKED`，不得标记 `DONE`。
+  - 例外条款：允许在“W8 冻结基线”前提下推进 W9-W10 受控试验，但不得回写为 W7-W8 完成。
 
 ### 5.10 W7-W8 Gate重构收敛回合（2026-05-24）
 - 状态：`BLOCKED`（严格 Gate-W8 仍未通过）
@@ -346,6 +347,33 @@
 - 结论：
   - 当前回合表明主约束已从“稳定性副项”转为“主效应幅度不足”。
   - W7-W8 必须继续保持 `IN_PROGRESS/BLOCKED`，不得标记 `DONE`。
+
+### 5.11 W9-W10（Contribution-3）平衡严格档 v1 状态（2026-05-29）
+- 状态：`BLOCKED`（strict Gate-W10 未通过）
+- W8 冻结基线：
+  - `d_r=0.70, obs_trace=55, c_obs=0.35, tau_obs=8, s_max=2.0`（`s_max` 在 `1.8~2.2` 内等价）。
+  - W8 保持 `BLOCKED` 原因：`rpe_p95_improve<20%`（主效应不足）。
+- W9（`alpha_NIS`）小批三档结论（`4序列×2模态×3次`）：
+  - A0：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_A0_smallbatch`
+    - `focus_rpe_p95_improve=-9.53%`，`focus_nis_drop=0%`，`committed_drop=0%`
+  - A1：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_A1_smallbatch`
+    - `focus_rpe_p95_improve=-9.45%`，`focus_nis_drop=-1.92%`
+  - A2：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_A2_smallbatch`
+    - `focus_rpe_p95_improve=-9.45%`，`focus_nis_drop=-1.92%`
+- W10（`zeta_RV + gate`）三档结论（固定 A0）：
+  - C0：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_C0_smallbatch`
+    - `committed_drop=47.03%`，`rpe_degrade=50.16%`
+  - C1：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_C1_smallbatch`
+    - `committed_drop=35.65%`，`rpe_degrade=14.92%`
+  - C2：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_C2_smallbatch`
+    - `committed_drop=53.36%`，`rpe_degrade=69.12%`
+- 最小修正回合（参数内）：
+  - R1（`zeta_only`, gate关闭）：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_R1_zeta_only_smallbatch`
+    - `committed_drop=-1.16%`，`focus_nis_drop=+40.38%`，但 `rpe_degrade=14.45%`，`focus_rpe_p95_improve=-15.61%`
+- 结论：
+  - W9-W10 代码链与诊断链有效（`alpha_nis_sat_rate=0`, `radar_starved=0`，字段完整）。
+  - strict Gate-W10 主失败项稳定为 `focus_rpe_p95_improve<10%`，且启用质量门控会显著拉低雷达提交计数。
+  - 按规则保持 `BLOCKED`，不得标记 `DONE`，不进入 W11+。
 
 ### 《边界警示》
 - 以上修正优先级遵循“先消除参数/调度不一致，再引入新统计模型”。
@@ -565,7 +593,7 @@ addUpdateMeas<2>(v, t_meas);
     - `rpe_p95_improve=-0.50%`（目标 `>=20%`）
   - 其余项均满足：`ATE/RPE` 未恶化、`runtime +5.60%`、`NIS` 改善、`committed` 不降、`radar_starved=0`。
 - 状态变更：
-  - W7-W8 保持 `IN_PROGRESS/BLOCKED`，不得标记 `DONE`，不进入 W9+。
+  - W7-W8 保持 `IN_PROGRESS/BLOCKED`，不得标记 `DONE`（该条为当时常规路径判定）。
 
 ### 2026-05-24（v1.8）
 - 完成 W7-W8 Gate重构收敛回合（阶段A/B1/B2/B3）全流程小批验证：
@@ -575,4 +603,18 @@ addUpdateMeas<2>(v, t_meas);
   - 阶段B3：`s_max=1.8/2.0/2.2` 结果一致（均 `+9.495%`）。
 - 门禁结论：
   - strict Gate-W8 仍 `FAIL`（主失败项：`rpe_p95_improve<20%`）。
-  - W7-W8 状态维持 `BLOCKED`，不得标记 `DONE`，不进入 W9+。
+  - W7-W8 状态维持 `BLOCKED`，不得标记 `DONE`（该条为当时常规路径判定）。
+
+### 2026-05-29（v1.9）
+- 执行“W8冻结基线后推进 W9-W10”：
+  - 新增 `cov_mode=alpha_r_sk_nis_rv` 与 `dvc_rrxio/contrib3/*` 运行参数链。
+  - 节点侧新增 Contribution-3 诊断列：
+    `d_v,q_r,q_v,zeta_rv,alpha_nis_prev,alpha_nis_new,alpha_nis_sat,quality_gate_pass,quality_gate_reason,radar_update_reject_reason,visual_feature_valid_count,visual_stale_s`。
+  - 新增脚本：`summarize_w10_results.py`、`gate_w10_check.py`。
+- 小批实验（`4序列×2模态×3次`）结果：
+  - A组（`alpha_NIS`）：A0/A1/A2 均未达到主效应阈值，最佳 A0 仍 `focus_rpe_p95_improve=-9.53%`。
+  - C组（`zeta+gate`，固定 A0）：C0/C1/C2 全部 `FAIL`，共同特征是 `committed_drop` 过高（35%~53%）并引发 `RPE` 恶化。
+  - 最小修正回合 R1（`zeta-only`）：恢复提交率（`committed_drop=-1.16%`）且 NIS 改善，但 `RPE` 仍超阈，strict Gate-W10 仍 `FAIL`。
+- 结论：
+  - W9-W10 代码和诊断链均生效，`alpha_nis_sat_rate=0`、`radar_starved=0`。
+  - 但在当前公式与数据下，strict Gate-W10 主失败项稳定为 `focus_rpe_p95_improve<10%`，阶段状态保持 `BLOCKED`，不得标记 `DONE`。

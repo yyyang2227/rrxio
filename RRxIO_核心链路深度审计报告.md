@@ -244,7 +244,7 @@
 - 小批结果 S1：`dvc_w8_p0p2_s1_smallbatch`，`Gate-W8=FAIL`（`rpe_p95_improve=-1.30%`，`ATE degrade=+5.27%` 超阈）。
 - 小批结果 S2：`dvc_w8_p0p2_s2_smallbatch`，`Gate-W8=FAIL`（`rpe_p95_improve=-1.84%`）。
 - 共性证据：`total_sk_rows=2256`，`radar_starved=0`；`outdoor_street` 组 `s_k_applied_count=0`，`indoor_floor/visual` 为主要负向贡献组。
-- 结论：W7-W8 状态必须保持 `BLOCKED`，不得标注 `DONE`，且不进入 W9+。
+- 结论：W7-W8 状态必须保持 `BLOCKED`，不得标注 `DONE`（常规路径不进入 W9+）。
 
 8. W7-W8 Gate重构收敛回合（2026-05-24）：
 - 阶段A（Gate预筛，`d_r × obs_trace`）：
@@ -255,6 +255,21 @@
 - 阶段B2（`tau_obs`）：最优 `tau_obs=8`（`+9.495%`），`tau=6/10` 更差
 - 阶段B3（`s_max`）：`1.8/2.0/2.2` 三档结果一致（均 `+9.495%`）
 - 结论：严格门禁主失败项仍是 `rpe_p95_improve<20%`，W7-W8 继续保持 `BLOCKED`。
+
+8.1 W8 冻结基线后 W9-W10 收敛状态（2026-05-29）：
+- 例外条款：允许在“W8 冻结基线”前提下推进 W9-W10 受控试验，但不得回写为 W7-W8 完成。
+- 冻结基线：`d_r=0.70, obs_trace=55, c_obs=0.35, tau_obs=8, s_max=2.0`（`s_max` 在 `1.8~2.2` 内等价）。
+- W9（A0/A1/A2）结果（`4序列×2模态×3次`）：
+  - A0：`dvc_w10_A0_smallbatch`，`focus_rpe_p95_improve=-9.53%`，`focus_nis_drop=0%`。
+  - A1：`dvc_w10_A1_smallbatch`，`focus_rpe_p95_improve=-9.45%`，`focus_nis_drop=-1.92%`。
+  - A2：`dvc_w10_A2_smallbatch`，`focus_rpe_p95_improve=-9.45%`，`focus_nis_drop=-1.92%`。
+- W10（C0/C1/C2，固定 A0）结果：
+  - C0：`dvc_w10_C0_smallbatch`，`committed_drop=47.03%`，`rpe_degrade=50.16%`。
+  - C1：`dvc_w10_C1_smallbatch`，`committed_drop=35.65%`，`rpe_degrade=14.92%`。
+  - C2：`dvc_w10_C2_smallbatch`，`committed_drop=53.36%`，`rpe_degrade=69.12%`。
+- 最小修正回合 R1（`zeta_only, gate关闭`）：
+  - `dvc_w10_R1_zeta_only_smallbatch`，`committed_drop=-1.16%`，`focus_nis_drop=+40.38%`，但 `rpe_degrade=14.45%`、`focus_rpe_p95_improve=-15.61%`。
+- 阶段结论：W9-W10 当前仍 `BLOCKED`，主失败项为 `focus_rpe_p95_improve<10%`；不进入 W11+。
 
 ---
 
@@ -332,3 +347,8 @@
   - 最优小批组合：`d_r=0.70, obs_trace=55, c_obs=0.35, tau_obs=8, s_max∈[1.8,2.2]`。
   - 最优指标：`rpe_p95_improve=+9.495%`（其余副项通过，`radar_starved=0`）。
   - 结论：仍未达到 strict `rpe_p95_improve>=20%`，W7-W8 状态保持 `BLOCKED`。
+- 2026-05-29（W8 冻结基线后 W9-W10 收敛回合）：
+  - 代码：接入 `alpha_r_sk_nis_rv`、`contrib3` 参数组、`d_v/q_r/q_v/zeta_rv/alpha_nis_*` 诊断列，新增 `summarize_w10_results.py` 与 `gate_w10_check.py`。
+  - 小批：完成 A0/A1/A2（alpha_NIS）、C0/C1/C2（zeta+gate）与 R1（zeta-only）三轮验证。
+  - 结果：`alpha_nis_sat_rate=0`、`radar_starved=0`，但 strict Gate-W10 均 `FAIL`；主失败项稳定为 `focus_rpe_p95_improve<10%`。
+  - 状态：W9-W10 保持 `BLOCKED`，不得标记 `DONE`。

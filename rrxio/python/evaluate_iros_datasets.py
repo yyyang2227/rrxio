@@ -123,6 +123,10 @@ def _append_manifest_row(manifest_csv, row):
         "runtime_s", "export_directory", "diag_file", "sched_diag_file", "perf_mode_requested", "perf_mode_effective",
         "dvc_sk_apply_gate_enable", "dvc_sk_lambda3_apply_max", "dvc_sk_d_r_apply_min", "dvc_sk_n_targets_apply_max",
         "dvc_sk_obs_trace_apply_max", "dvc_sk_obs_aniso_apply_min",
+        "dvc_c3_enable", "dvc_c3_alpha_nis_enable", "dvc_c3_eta", "dvc_c3_rho", "dvc_c3_alpha_max",
+        "dvc_c3_zeta_enable", "dvc_c3_theta0", "dvc_c3_theta1", "dvc_c3_theta2", "dvc_c3_theta3",
+        "dvc_c3_zeta_max", "dvc_c3_gate_enable", "dvc_c3_tau_r_high", "dvc_c3_tau_r_low", "dvc_c3_tau_v_low",
+        "dvc_c3_visual_features_ref", "dvc_c3_visual_stale_ref_s", "dvc_c3_visual_w_sparse", "dvc_c3_visual_w_stale",
         "dvc_scheduler_max_events", "dvc_scheduler_backpressure_depth", "dvc_scheduler_backpressure_high",
         "dvc_scheduler_backpressure_low", "dvc_scheduler_backpressure_timeout_s", "dvc_scheduler_imu_fast_path"
     ]
@@ -181,6 +185,26 @@ def _write_dvc_unified_config(path,
         "    n_targets_apply_max: {sk_n_targets_apply_max}\n"
         "    obs_trace_apply_max: {sk_obs_trace_apply_max}\n"
         "    obs_aniso_apply_min: {sk_obs_aniso_apply_min}\n"
+        "  contrib3:\n"
+        "    enable: {c3_enable}\n"
+        "    alpha_nis_enable: {c3_alpha_nis_enable}\n"
+        "    eta: {c3_eta}\n"
+        "    rho: {c3_rho}\n"
+        "    alpha_max: {c3_alpha_max}\n"
+        "    zeta_enable: {c3_zeta_enable}\n"
+        "    theta0: {c3_theta0}\n"
+        "    theta1: {c3_theta1}\n"
+        "    theta2: {c3_theta2}\n"
+        "    theta3: {c3_theta3}\n"
+        "    zeta_max: {c3_zeta_max}\n"
+        "    gate_enable: {c3_gate_enable}\n"
+        "    tau_r_high: {c3_tau_r_high}\n"
+        "    tau_r_low: {c3_tau_r_low}\n"
+        "    tau_v_low: {c3_tau_v_low}\n"
+        "    visual_features_ref: {c3_visual_features_ref}\n"
+        "    visual_stale_ref_s: {c3_visual_stale_ref_s}\n"
+        "    visual_w_sparse: {c3_visual_w_sparse}\n"
+        "    visual_w_stale: {c3_visual_w_stale}\n"
         "\n"
         "  scheduler:\n"
         "    mode: {scheduler_mode}\n"
@@ -230,6 +254,25 @@ def _write_dvc_unified_config(path,
         sk_n_targets_apply_max=args.dvc_sk_n_targets_apply_max,
         sk_obs_trace_apply_max=args.dvc_sk_obs_trace_apply_max,
         sk_obs_aniso_apply_min=args.dvc_sk_obs_aniso_apply_min,
+        c3_enable=_yaml_bool(args.dvc_c3_enable),
+        c3_alpha_nis_enable=_yaml_bool(args.dvc_c3_alpha_nis_enable),
+        c3_eta=args.dvc_c3_eta,
+        c3_rho=args.dvc_c3_rho,
+        c3_alpha_max=args.dvc_c3_alpha_max,
+        c3_zeta_enable=_yaml_bool(args.dvc_c3_zeta_enable),
+        c3_theta0=args.dvc_c3_theta0,
+        c3_theta1=args.dvc_c3_theta1,
+        c3_theta2=args.dvc_c3_theta2,
+        c3_theta3=args.dvc_c3_theta3,
+        c3_zeta_max=args.dvc_c3_zeta_max,
+        c3_gate_enable=_yaml_bool(args.dvc_c3_gate_enable),
+        c3_tau_r_high=args.dvc_c3_tau_r_high,
+        c3_tau_r_low=args.dvc_c3_tau_r_low,
+        c3_tau_v_low=args.dvc_c3_tau_v_low,
+        c3_visual_features_ref=args.dvc_c3_visual_features_ref,
+        c3_visual_stale_ref_s=args.dvc_c3_visual_stale_ref_s,
+        c3_visual_w_sparse=args.dvc_c3_visual_w_sparse,
+        c3_visual_w_stale=args.dvc_c3_visual_w_stale,
         scheduler_mode=_yaml_quote(scheduler_mode),
         max_events=args.dvc_scheduler_max_events,
         watermark_margin_s=args.dvc_scheduler_watermark_margin_s,
@@ -469,6 +512,25 @@ def run_feature(args, n_feature, git_rev_root, git_rev_reve):
                                     "dvc_sk_n_targets_apply_max": args.dvc_sk_n_targets_apply_max,
                                     "dvc_sk_obs_trace_apply_max": args.dvc_sk_obs_trace_apply_max,
                                     "dvc_sk_obs_aniso_apply_min": args.dvc_sk_obs_aniso_apply_min,
+                                    "dvc_c3_enable": int(args.dvc_c3_enable),
+                                    "dvc_c3_alpha_nis_enable": int(args.dvc_c3_alpha_nis_enable),
+                                    "dvc_c3_eta": args.dvc_c3_eta,
+                                    "dvc_c3_rho": args.dvc_c3_rho,
+                                    "dvc_c3_alpha_max": args.dvc_c3_alpha_max,
+                                    "dvc_c3_zeta_enable": int(args.dvc_c3_zeta_enable),
+                                    "dvc_c3_theta0": args.dvc_c3_theta0,
+                                    "dvc_c3_theta1": args.dvc_c3_theta1,
+                                    "dvc_c3_theta2": args.dvc_c3_theta2,
+                                    "dvc_c3_theta3": args.dvc_c3_theta3,
+                                    "dvc_c3_zeta_max": args.dvc_c3_zeta_max,
+                                    "dvc_c3_gate_enable": int(args.dvc_c3_gate_enable),
+                                    "dvc_c3_tau_r_high": args.dvc_c3_tau_r_high,
+                                    "dvc_c3_tau_r_low": args.dvc_c3_tau_r_low,
+                                    "dvc_c3_tau_v_low": args.dvc_c3_tau_v_low,
+                                    "dvc_c3_visual_features_ref": args.dvc_c3_visual_features_ref,
+                                    "dvc_c3_visual_stale_ref_s": args.dvc_c3_visual_stale_ref_s,
+                                    "dvc_c3_visual_w_sparse": args.dvc_c3_visual_w_sparse,
+                                    "dvc_c3_visual_w_stale": args.dvc_c3_visual_w_stale,
                                     "dvc_scheduler_max_events": args.dvc_scheduler_max_events,
                                     "dvc_scheduler_backpressure_depth": args.dvc_scheduler_backpressure_depth,
                                     "dvc_scheduler_backpressure_high": args.dvc_scheduler_backpressure_high,
@@ -547,7 +609,7 @@ def main():
     parser.add_argument("--suppress_console_output", action="store_true", help="Suppress roslaunch/analyze console output")
     parser.add_argument("--features", default="25,15,10", help="Comma-separated feature counts")
     parser.add_argument("--stage", default="baseline", help="Stage tag for manifest rows")
-    parser.add_argument("--cov_modes", default="base", help="Comma-separated covariance modes: base,fixed,alpha_r,alpha_r_sk")
+    parser.add_argument("--cov_modes", default="base", help="Comma-separated covariance modes: base,fixed,alpha_r,alpha_r_sk,alpha_r_sk_nis_rv")
     parser.add_argument("--dvc_fixed_scale", type=float, default=2.0)
     parser.add_argument("--dvc_alpha_r_w_cond", type=float, default=0.7)
     parser.add_argument("--dvc_alpha_r_w_inlier", type=float, default=1.0)
@@ -556,17 +618,36 @@ def main():
     parser.add_argument("--dvc_alpha_r_k_alpha", type=float, default=1.5)
     parser.add_argument("--dvc_alpha_r_alpha_r_max", type=float, default=5.0)
     parser.add_argument("--dvc_alpha_r_sigma_min2", type=float, default=1.0e-4)
-    parser.add_argument("--dvc_sk_enable", type=int, default=0, help="1 to enable directional S_k shaping, 0 to disable")
+    parser.add_argument("--dvc_sk_enable", type=int, default=1, help="1 to enable directional S_k shaping, 0 to disable")
     parser.add_argument("--dvc_sk_apply_gate_enable", type=int, default=1, help="1 to enable S_k apply gate, 0 to disable")
     parser.add_argument("--dvc_sk_tau_obs", type=float, default=8.0)
-    parser.add_argument("--dvc_sk_c_obs", type=float, default=1.5)
-    parser.add_argument("--dvc_sk_s_max", type=float, default=3.0)
+    parser.add_argument("--dvc_sk_c_obs", type=float, default=0.35)
+    parser.add_argument("--dvc_sk_s_max", type=float, default=2.0)
     parser.add_argument("--dvc_sk_eps_lambda", type=float, default=1.0e-6)
     parser.add_argument("--dvc_sk_lambda3_apply_max", type=float, default=2.0)
-    parser.add_argument("--dvc_sk_d_r_apply_min", type=float, default=0.55)
+    parser.add_argument("--dvc_sk_d_r_apply_min", type=float, default=0.70)
     parser.add_argument("--dvc_sk_n_targets_apply_max", type=float, default=40.0)
-    parser.add_argument("--dvc_sk_obs_trace_apply_max", type=float, default=1.0e12)
+    parser.add_argument("--dvc_sk_obs_trace_apply_max", type=float, default=55.0)
     parser.add_argument("--dvc_sk_obs_aniso_apply_min", type=float, default=0.0)
+    parser.add_argument("--dvc_c3_enable", type=int, default=0, help="1 to enable W9-W10 contrib3 logic, 0 to disable")
+    parser.add_argument("--dvc_c3_alpha_nis_enable", type=int, default=1)
+    parser.add_argument("--dvc_c3_eta", type=float, default=0.03)
+    parser.add_argument("--dvc_c3_rho", type=float, default=0.98)
+    parser.add_argument("--dvc_c3_alpha_max", type=float, default=8.0)
+    parser.add_argument("--dvc_c3_zeta_enable", type=int, default=1)
+    parser.add_argument("--dvc_c3_theta0", type=float, default=-1.2)
+    parser.add_argument("--dvc_c3_theta1", type=float, default=0.6)
+    parser.add_argument("--dvc_c3_theta2", type=float, default=0.4)
+    parser.add_argument("--dvc_c3_theta3", type=float, default=0.8)
+    parser.add_argument("--dvc_c3_zeta_max", type=float, default=3.0)
+    parser.add_argument("--dvc_c3_gate_enable", type=int, default=1)
+    parser.add_argument("--dvc_c3_tau_r_high", type=float, default=0.55)
+    parser.add_argument("--dvc_c3_tau_r_low", type=float, default=0.35)
+    parser.add_argument("--dvc_c3_tau_v_low", type=float, default=0.45)
+    parser.add_argument("--dvc_c3_visual_features_ref", type=float, default=25.0)
+    parser.add_argument("--dvc_c3_visual_stale_ref_s", type=float, default=0.20)
+    parser.add_argument("--dvc_c3_visual_w_sparse", type=float, default=1.0)
+    parser.add_argument("--dvc_c3_visual_w_stale", type=float, default=1.0)
     parser.add_argument("--scheduler_modes", default="legacy", help="Comma-separated scheduler modes")
     parser.add_argument("--dvc_scheduler_max_events", type=int, default=2048)
     parser.add_argument("--dvc_scheduler_watermark_margin_s", type=float, default=0.002)
@@ -606,11 +687,17 @@ def main():
     if not args.cov_modes:
         raise RuntimeError("No covariance mode provided.")
     for mode in args.cov_modes:
-        if mode not in ("base", "fixed", "alpha_r", "alpha_r_sk"):
+        if mode not in ("base", "fixed", "alpha_r", "alpha_r_sk", "alpha_r_sk_nis_rv"):
             raise RuntimeError("Unsupported cov mode: %s" % mode)
     args.dvc_sk_enable = int(args.dvc_sk_enable) != 0
     args.dvc_sk_apply_gate_enable = int(args.dvc_sk_apply_gate_enable) != 0
+    args.dvc_c3_enable = int(args.dvc_c3_enable) != 0
+    args.dvc_c3_alpha_nis_enable = int(args.dvc_c3_alpha_nis_enable) != 0
+    args.dvc_c3_zeta_enable = int(args.dvc_c3_zeta_enable) != 0
+    args.dvc_c3_gate_enable = int(args.dvc_c3_gate_enable) != 0
     args.cleanup_ros_processes = int(args.cleanup_ros_processes) != 0
+    if any(mode == "alpha_r_sk_nis_rv" for mode in args.cov_modes) and not args.dvc_c3_enable:
+        raise RuntimeError("cov_mode alpha_r_sk_nis_rv requires --dvc_c3_enable=1")
     if args.dvc_sk_tau_obs <= 0.0:
         raise RuntimeError("dvc_sk_tau_obs must be > 0.")
     if args.dvc_sk_c_obs < 0.0:
@@ -629,6 +716,22 @@ def main():
         raise RuntimeError("dvc_sk_obs_trace_apply_max must be > 0.")
     if args.dvc_sk_obs_aniso_apply_min < 0.0:
         raise RuntimeError("dvc_sk_obs_aniso_apply_min must be >= 0.")
+    if args.dvc_c3_eta < 0.0:
+        raise RuntimeError("dvc_c3_eta must be >= 0.")
+    if not (0.0 < args.dvc_c3_rho < 1.0):
+        raise RuntimeError("dvc_c3_rho must be in (0,1).")
+    if args.dvc_c3_alpha_max < 1.0:
+        raise RuntimeError("dvc_c3_alpha_max must be >= 1.")
+    if args.dvc_c3_zeta_max < 1.0:
+        raise RuntimeError("dvc_c3_zeta_max must be >= 1.")
+    if args.dvc_c3_tau_r_high <= args.dvc_c3_tau_r_low or args.dvc_c3_tau_r_low < 0.0 or args.dvc_c3_tau_v_low < 0.0:
+        raise RuntimeError("contrib3 gate thresholds must satisfy tau_r_high>tau_r_low>=0 and tau_v_low>=0.")
+    if args.dvc_c3_visual_features_ref <= 0.0:
+        raise RuntimeError("dvc_c3_visual_features_ref must be > 0.")
+    if args.dvc_c3_visual_stale_ref_s <= 0.0:
+        raise RuntimeError("dvc_c3_visual_stale_ref_s must be > 0.")
+    if args.dvc_c3_visual_w_sparse < 0.0 or args.dvc_c3_visual_w_stale < 0.0:
+        raise RuntimeError("dvc_c3_visual_w_sparse and dvc_c3_visual_w_stale must be >= 0.")
     args.scheduler_modes = [m.strip().lower() for m in args.scheduler_modes.split(",") if m.strip()]
     if not args.scheduler_modes:
         raise RuntimeError("No scheduler mode provided.")

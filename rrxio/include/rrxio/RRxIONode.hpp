@@ -194,6 +194,30 @@ public:
   };
   RadarSkConfig radar_sk_cfg_;
 
+  struct Contrib3Config
+  {
+    bool enable            = false;
+    bool alpha_nis_enable  = true;
+    double eta             = 0.03;
+    double rho             = 0.98;
+    double alpha_max       = 8.0;
+    bool zeta_enable       = true;
+    double theta0          = -1.2;
+    double theta1          = 0.6;
+    double theta2          = 0.4;
+    double theta3          = 0.8;
+    double zeta_max        = 3.0;
+    bool gate_enable       = true;
+    double tau_r_high      = 0.55;
+    double tau_r_low       = 0.35;
+    double tau_v_low       = 0.45;
+    double visual_features_ref = 25.0;
+    double visual_stale_ref_s  = 0.20;
+    double visual_w_sparse     = 1.0;
+    double visual_w_stale      = 1.0;
+  };
+  Contrib3Config contrib3_cfg_;
+
   struct RadarCovDiagFields
   {
     double d_r = std::numeric_limits<double>::quiet_NaN();
@@ -216,6 +240,18 @@ public:
     int sk_gate_ntargets_pass = 0;
     int sk_gate_obs_trace_pass = 0;
     int sk_gate_obs_aniso_pass = 0;
+    double d_v = std::numeric_limits<double>::quiet_NaN();
+    double q_r = std::numeric_limits<double>::quiet_NaN();
+    double q_v = std::numeric_limits<double>::quiet_NaN();
+    double zeta_rv = std::numeric_limits<double>::quiet_NaN();
+    double alpha_nis_prev = std::numeric_limits<double>::quiet_NaN();
+    double alpha_nis_new = std::numeric_limits<double>::quiet_NaN();
+    int alpha_nis_sat = 0;
+    int quality_gate_pass = 0;
+    std::string quality_gate_reason = "not_applicable";
+    std::string radar_update_reject_reason = "none";
+    int visual_feature_valid_count = 0;
+    double visual_stale_s = std::numeric_limits<double>::quiet_NaN();
   };
 
   static constexpr double kChi2_3_95_ = 7.8147279;
@@ -341,6 +377,10 @@ public:
   uint64_t pending_loader_backpressure_imu_depth_ = 0;
   int pending_loader_backpressure_timeout_ = 0;
   uint64_t publish_cycle_count_ = 0;
+  double contrib3_alpha_nis_state_ = 1.0;
+  uint64_t contrib3_alpha_nis_saturated_count_ = 0;
+  double last_visual_update_time_ = std::numeric_limits<double>::quiet_NaN();
+  int last_visual_feature_valid_count_ = 0;
 
   // Nodes, Subscriber, Publishers
   ros::NodeHandle nh_;
@@ -502,6 +542,30 @@ public:
         "dvc_rrxio/s_k/obs_trace_apply_max", radar_sk_cfg_.obs_trace_apply_max, radar_sk_cfg_.obs_trace_apply_max);
     nh_private_.param(
         "dvc_rrxio/s_k/obs_aniso_apply_min", radar_sk_cfg_.obs_aniso_apply_min, radar_sk_cfg_.obs_aniso_apply_min);
+    nh_private_.param("dvc_rrxio/contrib3/enable", contrib3_cfg_.enable, contrib3_cfg_.enable);
+    nh_private_.param(
+        "dvc_rrxio/contrib3/alpha_nis_enable", contrib3_cfg_.alpha_nis_enable, contrib3_cfg_.alpha_nis_enable);
+    nh_private_.param("dvc_rrxio/contrib3/eta", contrib3_cfg_.eta, contrib3_cfg_.eta);
+    nh_private_.param("dvc_rrxio/contrib3/rho", contrib3_cfg_.rho, contrib3_cfg_.rho);
+    nh_private_.param("dvc_rrxio/contrib3/alpha_max", contrib3_cfg_.alpha_max, contrib3_cfg_.alpha_max);
+    nh_private_.param("dvc_rrxio/contrib3/zeta_enable", contrib3_cfg_.zeta_enable, contrib3_cfg_.zeta_enable);
+    nh_private_.param("dvc_rrxio/contrib3/theta0", contrib3_cfg_.theta0, contrib3_cfg_.theta0);
+    nh_private_.param("dvc_rrxio/contrib3/theta1", contrib3_cfg_.theta1, contrib3_cfg_.theta1);
+    nh_private_.param("dvc_rrxio/contrib3/theta2", contrib3_cfg_.theta2, contrib3_cfg_.theta2);
+    nh_private_.param("dvc_rrxio/contrib3/theta3", contrib3_cfg_.theta3, contrib3_cfg_.theta3);
+    nh_private_.param("dvc_rrxio/contrib3/zeta_max", contrib3_cfg_.zeta_max, contrib3_cfg_.zeta_max);
+    nh_private_.param("dvc_rrxio/contrib3/gate_enable", contrib3_cfg_.gate_enable, contrib3_cfg_.gate_enable);
+    nh_private_.param("dvc_rrxio/contrib3/tau_r_high", contrib3_cfg_.tau_r_high, contrib3_cfg_.tau_r_high);
+    nh_private_.param("dvc_rrxio/contrib3/tau_r_low", contrib3_cfg_.tau_r_low, contrib3_cfg_.tau_r_low);
+    nh_private_.param("dvc_rrxio/contrib3/tau_v_low", contrib3_cfg_.tau_v_low, contrib3_cfg_.tau_v_low);
+    nh_private_.param("dvc_rrxio/contrib3/visual_features_ref",
+                      contrib3_cfg_.visual_features_ref,
+                      contrib3_cfg_.visual_features_ref);
+    nh_private_.param(
+        "dvc_rrxio/contrib3/visual_stale_ref_s", contrib3_cfg_.visual_stale_ref_s, contrib3_cfg_.visual_stale_ref_s);
+    nh_private_.param(
+        "dvc_rrxio/contrib3/visual_w_sparse", contrib3_cfg_.visual_w_sparse, contrib3_cfg_.visual_w_sparse);
+    nh_private_.param("dvc_rrxio/contrib3/visual_w_stale", contrib3_cfg_.visual_w_stale, contrib3_cfg_.visual_w_stale);
     nh_private_.param("max_r_cond", radar_cov_recalib_cfg_.max_r_cond_ref, radar_cov_recalib_cfg_.max_r_cond_ref);
 
     std::transform(radar_cov_recalib_cfg_.cov_mode.begin(),
@@ -527,9 +591,15 @@ public:
       throw std::runtime_error("Invalid dvc_rrxio/scheduler/mode. Supported: legacy, event_stage1, event_stage2.");
 
     if (radar_cov_recalib_cfg_.cov_mode != "base" && radar_cov_recalib_cfg_.cov_mode != "fixed" &&
-        radar_cov_recalib_cfg_.cov_mode != "alpha_r" && radar_cov_recalib_cfg_.cov_mode != "alpha_r_sk")
+        radar_cov_recalib_cfg_.cov_mode != "alpha_r" && radar_cov_recalib_cfg_.cov_mode != "alpha_r_sk" &&
+        radar_cov_recalib_cfg_.cov_mode != "alpha_r_sk_nis_rv")
     {
-      throw std::runtime_error("Invalid dvc_rrxio/cov_mode. Supported modes: base, fixed, alpha_r, alpha_r_sk.");
+      throw std::runtime_error(
+          "Invalid dvc_rrxio/cov_mode. Supported modes: base, fixed, alpha_r, alpha_r_sk, alpha_r_sk_nis_rv.");
+    }
+    if (radar_cov_recalib_cfg_.cov_mode == "alpha_r_sk_nis_rv" && !contrib3_cfg_.enable)
+    {
+      throw std::runtime_error("cov_mode=alpha_r_sk_nis_rv requires dvc_rrxio/contrib3/enable=true.");
     }
     if (radar_cov_recalib_cfg_.fixed_scale <= 0.0)
     {
@@ -591,6 +661,27 @@ public:
     {
       throw std::runtime_error("max_r_cond must be > 1 for alpha_R condition-number normalization.");
     }
+    if (!(std::isfinite(contrib3_cfg_.eta) && contrib3_cfg_.eta >= 0.0))
+      throw std::runtime_error("dvc_rrxio/contrib3/eta must be finite and >= 0.");
+    if (!(std::isfinite(contrib3_cfg_.rho) && contrib3_cfg_.rho > 0.0 && contrib3_cfg_.rho < 1.0))
+      throw std::runtime_error("dvc_rrxio/contrib3/rho must be finite and in (0,1).");
+    if (!(std::isfinite(contrib3_cfg_.alpha_max) && contrib3_cfg_.alpha_max >= 1.0))
+      throw std::runtime_error("dvc_rrxio/contrib3/alpha_max must be finite and >= 1.");
+    if (!(std::isfinite(contrib3_cfg_.zeta_max) && contrib3_cfg_.zeta_max >= 1.0))
+      throw std::runtime_error("dvc_rrxio/contrib3/zeta_max must be finite and >= 1.");
+    if (!(std::isfinite(contrib3_cfg_.tau_r_high) && std::isfinite(contrib3_cfg_.tau_r_low) &&
+          std::isfinite(contrib3_cfg_.tau_v_low)))
+      throw std::runtime_error("dvc_rrxio/contrib3/tau_r_high/tau_r_low/tau_v_low must be finite.");
+    if (!(contrib3_cfg_.tau_r_high > contrib3_cfg_.tau_r_low && contrib3_cfg_.tau_r_low >= 0.0 && contrib3_cfg_.tau_v_low >= 0.0))
+      throw std::runtime_error("dvc_rrxio/contrib3 gate thresholds must satisfy tau_r_high>tau_r_low>=0 and tau_v_low>=0.");
+    if (!(std::isfinite(contrib3_cfg_.visual_features_ref) && contrib3_cfg_.visual_features_ref > 0.0))
+      throw std::runtime_error("dvc_rrxio/contrib3/visual_features_ref must be finite and > 0.");
+    if (!(std::isfinite(contrib3_cfg_.visual_stale_ref_s) && contrib3_cfg_.visual_stale_ref_s > 0.0))
+      throw std::runtime_error("dvc_rrxio/contrib3/visual_stale_ref_s must be finite and > 0.");
+    if (!(std::isfinite(contrib3_cfg_.visual_w_sparse) && contrib3_cfg_.visual_w_sparse >= 0.0))
+      throw std::runtime_error("dvc_rrxio/contrib3/visual_w_sparse must be finite and >= 0.");
+    if (!(std::isfinite(contrib3_cfg_.visual_w_stale) && contrib3_cfg_.visual_w_stale >= 0.0))
+      throw std::runtime_error("dvc_rrxio/contrib3/visual_w_stale must be finite and >= 0.");
     if (scheduler_cfg_.max_events <= 0)
       throw std::runtime_error("dvc_rrxio/scheduler/max_events must be > 0.");
     if (scheduler_cfg_.watermark_margin_s < 0.0)
@@ -858,6 +949,66 @@ public:
     return std::max(low, std::min(high, value));
   }
 
+  static double softplusStable(const double x)
+  {
+    if (x > 40.0)
+      return x;
+    if (x < -40.0)
+      return std::exp(x);
+    return std::log1p(std::exp(x));
+  }
+
+  bool isContrib3Mode() const { return radar_cov_recalib_cfg_.cov_mode == "alpha_r_sk_nis_rv"; }
+
+  void fillVisualQualityProxy(const double radar_timestamp, RadarCovDiagFields& cov_diag) const
+  {
+    const double valid_features = static_cast<double>(std::max(0, last_visual_feature_valid_count_));
+    const double feature_ratio =
+        clampScalar(valid_features / std::max(1.0, contrib3_cfg_.visual_features_ref), 0.0, 1.0);
+    const double sparse = clampScalar(1.0 - feature_ratio, 0.0, 1.0);
+
+    double stale_s = contrib3_cfg_.visual_stale_ref_s;
+    if (std::isfinite(last_visual_update_time_))
+      stale_s = std::max(0.0, radar_timestamp - last_visual_update_time_);
+    const double stale_norm = clampScalar(stale_s / std::max(1.0e-6, contrib3_cfg_.visual_stale_ref_s), 0.0, 1.0);
+
+    cov_diag.visual_feature_valid_count = static_cast<int>(valid_features);
+    cov_diag.visual_stale_s = stale_s;
+    cov_diag.d_v = clampScalar(contrib3_cfg_.visual_w_sparse * sparse + contrib3_cfg_.visual_w_stale * stale_norm, 0.0, 10.0);
+    cov_diag.q_v = std::exp(-cov_diag.d_v);
+  }
+
+  void updateAlphaNisState(const int radar_update_committed, const int nis_valid, const double nis_vel, RadarCovDiagFields& cov_diag)
+  {
+    const double prev = contrib3_alpha_nis_state_;
+    cov_diag.alpha_nis_prev = prev;
+
+    double next = prev;
+    if (contrib3_cfg_.alpha_nis_enable)
+    {
+      if (radar_update_committed == 1 && nis_valid == 1 && std::isfinite(nis_vel))
+      {
+        const double exponent = contrib3_cfg_.eta * (nis_vel / 3.0 - 1.0);
+        next = clampScalar(prev * std::exp(exponent), 1.0, contrib3_cfg_.alpha_max);
+      }
+      else
+      {
+        next = 1.0 + contrib3_cfg_.rho * (prev - 1.0);
+        next = clampScalar(next, 1.0, contrib3_cfg_.alpha_max);
+      }
+    }
+    else
+    {
+      next = 1.0;
+    }
+
+    cov_diag.alpha_nis_new = next;
+    cov_diag.alpha_nis_sat = (std::fabs(next - contrib3_cfg_.alpha_max) < 1.0e-9) ? 1 : 0;
+    if (cov_diag.alpha_nis_sat == 1)
+      contrib3_alpha_nis_saturated_count_++;
+    contrib3_alpha_nis_state_ = next;
+  }
+
   bool isPerfMode() const { return perf_cfg_.mode == "perf"; }
 
   bool shouldRunOnCycle(const int decimation) const
@@ -926,7 +1077,7 @@ public:
       return ok;
     }
 
-    if (mode != "alpha_r" && mode != "alpha_r_sk")
+    if (mode != "alpha_r" && mode != "alpha_r_sk" && mode != "alpha_r_sk_nis_rv")
       return false;
 
     const double denom = std::log10(radar_cov_recalib_cfg_.max_r_cond_ref);
@@ -944,6 +1095,7 @@ public:
 
     cov_diag.d_r = radar_cov_recalib_cfg_.w_cond * f_cond + radar_cov_recalib_cfg_.w_inlier * f_inlier +
                    radar_cov_recalib_cfg_.w_sparse * f_sparse;
+    cov_diag.q_r = std::exp(-cov_diag.d_r);
     cov_diag.alpha_r = clampScalar(1.0 + radar_cov_recalib_cfg_.k_alpha * cov_diag.d_r, 1.0, radar_cov_recalib_cfg_.alpha_r_max);
 
     Eigen::Matrix3d cov_alpha = cov_diag.alpha_r * cov_reve + radar_cov_recalib_cfg_.sigma_min2 * I;
@@ -1087,7 +1239,9 @@ public:
                         "nis_vel,nis_valid,nis_exceed_95,radar_update_committed,s_k_valid,lambda1_obs,lambda2_obs,"
                         "lambda3_obs,obs_trace,obs_aniso,s1,s2,s3,trace_R_after_alpha,trace_R_after_sk,s_k_applied,"
                         "s_k_skip_reason,sk_gate_lambda3_pass,sk_gate_d_r_pass,sk_gate_ntargets_pass,"
-                        "sk_gate_obs_trace_pass,sk_gate_obs_aniso_pass\n";
+                        "sk_gate_obs_trace_pass,sk_gate_obs_aniso_pass,d_v,q_r,q_v,zeta_rv,alpha_nis_prev,"
+                        "alpha_nis_new,alpha_nis_sat,quality_gate_pass,quality_gate_reason,radar_update_reject_reason,"
+                        "visual_feature_valid_count,visual_stale_s\n";
     dvc_diag_stream_.flush();
     ROS_INFO_STREAM("[dvc_diag] Logging enabled: " << diag_file);
   }
@@ -1134,7 +1288,12 @@ public:
                      << "," << cov_diag.s_k_skip_reason << ","
                      << cov_diag.sk_gate_lambda3_pass << "," << cov_diag.sk_gate_d_r_pass << ","
                      << cov_diag.sk_gate_ntargets_pass << "," << cov_diag.sk_gate_obs_trace_pass << ","
-                     << cov_diag.sk_gate_obs_aniso_pass
+                     << cov_diag.sk_gate_obs_aniso_pass << ","
+                     << cov_diag.d_v << "," << cov_diag.q_r << "," << cov_diag.q_v << "," << cov_diag.zeta_rv << ","
+                     << cov_diag.alpha_nis_prev << "," << cov_diag.alpha_nis_new << "," << cov_diag.alpha_nis_sat << ","
+                     << cov_diag.quality_gate_pass << "," << cov_diag.quality_gate_reason << ","
+                     << cov_diag.radar_update_reject_reason << "," << cov_diag.visual_feature_valid_count << ","
+                     << cov_diag.visual_stale_s
                      << "\n";
     dvc_diag_stream_.flush();
   }
@@ -2152,6 +2311,7 @@ public:
       if (imgUpdateMeas_.template get<mtImgMeas::_aux>().areAllValid())
       {
         mpFilter_->template addUpdateMeas<0>(imgUpdateMeas_, msgTime);
+        last_visual_update_time_ = msgTime;
         imgUpdateMeas_.template get<mtImgMeas::_aux>().reset(msgTime);
         updateAndPublish();
       }
@@ -2382,11 +2542,15 @@ public:
     int nis_valid             = 0;
     int nis_exceed_95         = 0;
     int radar_update_committed = 0;
+    int use_radar_update       = 0;
     last_radar_enqueue_to_commit_ms_ = std::numeric_limits<double>::quiet_NaN();
     last_reve_ms_ = std::numeric_limits<double>::quiet_NaN();
     last_backend_ms_ = std::numeric_limits<double>::quiet_NaN();
 
     const double t_reve_start = ros::WallTime::now().toSec();
+    const bool use_contrib3   = isContrib3Mode() && contrib3_cfg_.enable;
+    const double radar_timestamp = most_recent_radar_scan_.header.stamp.toSec();
+    bool quality_gate_pass = true;
 
     if (radar_body_estimator_->estimate(most_recent_radar_scan_, w, v_b_r, cov_v_b_r_reve, &radar_diag))
     {
@@ -2397,7 +2561,10 @@ public:
         if (!computeRadarCovariance(cov_v_b_r_reve, radar_diag, cov_v_b_r_used, cov_diag))
         {
           ROS_WARN_STREAM("[radarScanCallback] Invalid radar covariance after recalibration. Skip radar update.");
-          writeDvcDiagRow(most_recent_radar_scan_.header.stamp.toSec(),
+          cov_diag.radar_update_reject_reason = "cov_invalid";
+          if (use_contrib3)
+            updateAlphaNisState(0, 0, std::numeric_limits<double>::quiet_NaN(), cov_diag);
+          writeDvcDiagRow(radar_timestamp,
                           radar_diag,
                           &cov_v_b_r_reve,
                           0,
@@ -2413,32 +2580,109 @@ public:
           return;
         }
 
-        const double t_backend_start = ros::WallTime::now().toSec();
-        mpVelocityUpdate_->setMeasurementNoise(cov_v_b_r_used);
-
-        velocityUpdateMeas_.vel() = v_b_r;
-
-        // TODO make parameter
-        mpFilter_->template addUpdateMeas<2>(velocityUpdateMeas_,
-                                             most_recent_radar_scan_.header.stamp.toSec() + 10.0e-3);
-        updateAndPublish();
-        runtime_backend_ms = (ros::WallTime::now().toSec() - t_backend_start) * 1000.0;
-        last_backend_ms_ = runtime_backend_ms;
-
-        const VelocityUpdateDiag& vel_diag = mpVelocityUpdate_->getLastDiag();
-        nis_vel = vel_diag.mahalanobis_distance;
-        nis_valid = std::isfinite(nis_vel) ? 1 : 0;
-        radar_update_committed = (nis_valid == 1 && !vel_diag.is_outlier) ? 1 : 0;
-        nis_exceed_95          = (nis_valid == 1 && std::isfinite(nis_vel) && nis_vel > kChi2_3_95_) ? 1 : 0;
-        if (radar_update_committed == 1 && std::isfinite(active_radar_enqueue_wall_time_))
+        if (use_contrib3)
         {
-          last_radar_enqueue_to_commit_ms_ = (ros::WallTime::now().toSec() - active_radar_enqueue_wall_time_) * 1000.0;
+          fillVisualQualityProxy(radar_timestamp, cov_diag);
+          if (!std::isfinite(cov_diag.q_r) && std::isfinite(cov_diag.d_r))
+            cov_diag.q_r = std::exp(-cov_diag.d_r);
+
+          double alpha_nis_prev = 1.0;
+          if (contrib3_cfg_.alpha_nis_enable)
+            alpha_nis_prev = clampScalar(contrib3_alpha_nis_state_, 1.0, contrib3_cfg_.alpha_max);
+          cov_diag.alpha_nis_prev = alpha_nis_prev;
+
+          double zeta_rv = 1.0;
+          if (contrib3_cfg_.zeta_enable && std::isfinite(cov_diag.d_r) && std::isfinite(cov_diag.d_v))
+          {
+            const double zeta_raw = contrib3_cfg_.theta0 + contrib3_cfg_.theta1 * cov_diag.d_r +
+                                    contrib3_cfg_.theta2 * cov_diag.d_v + contrib3_cfg_.theta3 * cov_diag.d_r * cov_diag.d_v;
+            zeta_rv = clampScalar(1.0 + softplusStable(zeta_raw), 1.0, contrib3_cfg_.zeta_max);
+          }
+          cov_diag.zeta_rv = zeta_rv;
+
+          cov_diag.quality_gate_pass   = 1;
+          cov_diag.quality_gate_reason = "gate_disabled";
+          if (contrib3_cfg_.gate_enable)
+          {
+            const bool high_ok  = std::isfinite(cov_diag.q_r) && cov_diag.q_r > contrib3_cfg_.tau_r_high;
+            const bool cross_ok = std::isfinite(cov_diag.q_r) && std::isfinite(cov_diag.q_v) &&
+                                  cov_diag.q_r > contrib3_cfg_.tau_r_low && cov_diag.q_v < contrib3_cfg_.tau_v_low;
+            quality_gate_pass = high_ok || cross_ok;
+            cov_diag.quality_gate_pass = quality_gate_pass ? 1 : 0;
+            if (quality_gate_pass)
+              cov_diag.quality_gate_reason = high_ok ? "pass_radar_high" : "pass_cross_modal";
+            else if (!std::isfinite(cov_diag.q_r))
+              cov_diag.quality_gate_reason = "reject_qr_invalid";
+            else if (cov_diag.q_r <= contrib3_cfg_.tau_r_low)
+              cov_diag.quality_gate_reason = "reject_qr_low";
+            else
+              cov_diag.quality_gate_reason = "reject_qv_high";
+          }
+
+          const double scale = alpha_nis_prev * zeta_rv;
+          cov_v_b_r_used *= scale;
+          if (!regularizeCovariance(cov_v_b_r_used, radar_cov_recalib_cfg_.sigma_min2))
+          {
+            cov_diag.radar_update_reject_reason = "contrib3_cov_invalid";
+            if (use_contrib3)
+              updateAlphaNisState(0, 0, std::numeric_limits<double>::quiet_NaN(), cov_diag);
+            writeDvcDiagRow(radar_timestamp,
+                            radar_diag,
+                            &cov_v_b_r_reve,
+                            0,
+                            runtime_reve_ms,
+                            runtime_backend_ms,
+                            radar_cov_recalib_cfg_.cov_mode,
+                            cov_diag,
+                            nis_vel,
+                            nis_valid,
+                            nis_exceed_95,
+                            radar_update_committed);
+            most_recent_radar_scan_.header.stamp = ros::TIME_MIN;
+            return;
+          }
         }
 
-        writeDvcDiagRow(most_recent_radar_scan_.header.stamp.toSec(),
+        if (quality_gate_pass)
+        {
+          use_radar_update = 1;
+          const double t_backend_start = ros::WallTime::now().toSec();
+          mpVelocityUpdate_->setMeasurementNoise(cov_v_b_r_used);
+
+          velocityUpdateMeas_.vel() = v_b_r;
+
+          // TODO make parameter
+          mpFilter_->template addUpdateMeas<2>(velocityUpdateMeas_,
+                                               most_recent_radar_scan_.header.stamp.toSec() + 10.0e-3);
+          updateAndPublish();
+          runtime_backend_ms = (ros::WallTime::now().toSec() - t_backend_start) * 1000.0;
+          last_backend_ms_ = runtime_backend_ms;
+
+          const VelocityUpdateDiag& vel_diag = mpVelocityUpdate_->getLastDiag();
+          nis_vel = vel_diag.mahalanobis_distance;
+          nis_valid = std::isfinite(nis_vel) ? 1 : 0;
+          radar_update_committed = (nis_valid == 1 && !vel_diag.is_outlier) ? 1 : 0;
+          nis_exceed_95          = (nis_valid == 1 && std::isfinite(nis_vel) && nis_vel > kChi2_3_95_) ? 1 : 0;
+          if (radar_update_committed == 1 && std::isfinite(active_radar_enqueue_wall_time_))
+          {
+            last_radar_enqueue_to_commit_ms_ = (ros::WallTime::now().toSec() - active_radar_enqueue_wall_time_) * 1000.0;
+          }
+          if (radar_update_committed == 0)
+            cov_diag.radar_update_reject_reason = "velocity_outlier";
+        }
+        else
+        {
+          use_radar_update = 0;
+          cov_diag.radar_update_reject_reason = "quality_gate";
+        }
+
+        if (use_contrib3)
+          updateAlphaNisState(radar_update_committed, nis_valid, nis_vel, cov_diag);
+
+        writeDvcDiagRow(radar_timestamp,
                         radar_diag,
                         &cov_v_b_r_used,
-                        1,
+                        use_radar_update,
                         runtime_reve_ms,
                         runtime_backend_ms,
                         radar_cov_recalib_cfg_.cov_mode,
@@ -2453,7 +2697,12 @@ public:
         // estimation succeeded but update not used because filter not initialized yet
         if (computeRadarCovariance(cov_v_b_r_reve, radar_diag, cov_v_b_r_used, cov_diag))
         {
-          writeDvcDiagRow(most_recent_radar_scan_.header.stamp.toSec(),
+          cov_diag.radar_update_reject_reason = "filter_not_initialized";
+          if (use_contrib3)
+            fillVisualQualityProxy(radar_timestamp, cov_diag);
+          if (use_contrib3)
+            updateAlphaNisState(0, 0, std::numeric_limits<double>::quiet_NaN(), cov_diag);
+          writeDvcDiagRow(radar_timestamp,
                           radar_diag,
                           &cov_v_b_r_used,
                           0,
@@ -2468,7 +2717,12 @@ public:
         }
         else
         {
-          writeDvcDiagRow(most_recent_radar_scan_.header.stamp.toSec(),
+          cov_diag.radar_update_reject_reason = "cov_invalid";
+          if (use_contrib3)
+            fillVisualQualityProxy(radar_timestamp, cov_diag);
+          if (use_contrib3)
+            updateAlphaNisState(0, 0, std::numeric_limits<double>::quiet_NaN(), cov_diag);
+          writeDvcDiagRow(radar_timestamp,
                           radar_diag,
                           &cov_v_b_r_reve,
                           0,
@@ -2488,7 +2742,10 @@ public:
       runtime_reve_ms = (ros::WallTime::now().toSec() - t_reve_start) * 1000.0;
       last_reve_ms_ = runtime_reve_ms;
       ROS_INFO_STREAM("[radarScanCallback]: Ego velocity failed");
-      writeDvcDiagRow(most_recent_radar_scan_.header.stamp.toSec(),
+      cov_diag.radar_update_reject_reason = "reve_failed";
+      if (use_contrib3)
+        updateAlphaNisState(0, 0, std::numeric_limits<double>::quiet_NaN(), cov_diag);
+      writeDvcDiagRow(radar_timestamp,
                       radar_diag,
                       nullptr,
                       0,
@@ -2566,6 +2823,7 @@ public:
     }
 
     init_state_.state_ = FilterInitializationState::State::WaitForInitUsingAccel;
+    contrib3_alpha_nis_state_ = 1.0;
   }
 
   /** \brief Reset the filter when the next IMU measurement is received.
@@ -2597,6 +2855,7 @@ public:
     init_state_.WrWM_  = WrWM;
     init_state_.qMW_   = qMW;
     init_state_.state_ = FilterInitializationState::State::WaitForInitExternalPose;
+    contrib3_alpha_nis_state_ = 1.0;
   }
 
   /** \brief Executes the update step of the filter and publishes the updated data.
@@ -2669,6 +2928,13 @@ public:
         mtState& state             = mpFilter_->safe_.state_;
         state.updateMultiCameraExtrinsics(&mpFilter_->multiCamera_);
         MXD& cov = mpFilter_->safe_.cov_;
+        int valid_features = 0;
+        for (unsigned int i = 0; i < mtState::nMax_; ++i)
+        {
+          if (filterState.fsm_.isValid_[i])
+            valid_features++;
+        }
+        last_visual_feature_valid_count_ = valid_features;
         imuOutputCT_.transformState(state, imuOutput_);
 
         // Cout verbose for pose measurements

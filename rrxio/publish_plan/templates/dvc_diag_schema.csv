@@ -9,7 +9,7 @@ radar_scan_callback_count,uint64,-,cumulative radar scan callback counter,true
 row_id,uint64,-,monotonic row index per run,true
 runtime_reve_ms,float64,ms,REVE runtime,false
 runtime_backend_ms,float64,ms,backend update runtime,false
-cov_mode,string,-,covariance mode (base/fixed/alpha_r),false
+cov_mode,string,-,covariance mode (base/fixed/alpha_r/alpha_r_sk/alpha_r_sk_nis_rv),false
 d_r,float64,-,radar degeneration score,false
 alpha_r,float64,-,isotropic inflation factor,false
 n_targets,uint,-,number of radar targets used by REVE,false
@@ -27,3 +27,15 @@ s2,float64,-,directional inflation factor for lambda2_obs,false
 s3,float64,-,directional inflation factor for lambda3_obs,false
 trace_R_after_alpha,float64,(m/s)^2,trace after alpha_R inflation before S_k,false
 trace_R_after_sk,float64,(m/s)^2,trace after S_k directional shaping,false
+d_v,float64,-,visual degradation proxy score,false
+q_r,float64,-,radar quality confidence exp(-d_r),false
+q_v,float64,-,visual quality confidence exp(-d_v),false
+zeta_rv,float64,-,cross-modal covariance inflation factor,false
+alpha_nis_prev,float64,-,previous NIS inflation state,false
+alpha_nis_new,float64,-,updated NIS inflation state,false
+alpha_nis_sat,int,-,1 if alpha_nis reaches configured upper bound,false
+quality_gate_pass,int,-,1 if quality gate accepts radar update,false
+quality_gate_reason,string,-,quality gate decision reason,false
+radar_update_reject_reason,string,-,explicit reason when radar update is not committed,false
+visual_feature_valid_count,int,-,valid visual feature count used by d_v proxy,false
+visual_stale_s,float64,s,time gap from latest visual update,false

@@ -31,7 +31,7 @@
 | W3-W4 | DONE | 诊断链最小闭环 | 在 `RRxIONode` 与 REVE 链路增补 `cond/inlier_ratio/traceR/minEigR/update_used` 输出 | 校验诊断值随场景变化趋势 | `dvc_diag.csv` + 诊断图 | 每帧可追踪、无缺列 |
 | W5-W6 | DONE | Contribution-1（已完成） | 接入 `alpha_R` 各向同性重标定（保持低侵入） + NIS 诊断闭环 + 调度确定性修正 | 全量对比 `base/fixed/alpha_r`（9序列×2模态×3次） | `w6_metrics.csv`+`w6_summary.md`+对比图+Gate报告 | Gate-W6 与 Scheduler 严格门禁双 PASS |
 | W7-W8 | BLOCKED | Contribution-2 | 接入 `S_k` 方向性塑形 + SPD保护 | 几何退化专项实验 | 退化证据图 | 严格 Gate-W8 通过（当前未通过） |
-| W9-W10 | TODO | Contribution-3 | 接入 `alpha_NIS` 与 `zeta_RV`，明确更新接受/拒绝日志 | 双退化实验（视觉差+雷达差） | 完整 DVC 主链 | `alpha_NIS` 不长期饱和 |
+| W9-W10 | BLOCKED | Contribution-3 | 接入 `alpha_NIS` 与 `zeta_RV`，明确更新接受/拒绝日志 | 双退化实验（视觉差+雷达差） | 完整 DVC 主链 | 平衡严格档 v1 Gate-W10 通过（当前未通过） |
 | W11-W12 | TODO | 完整消融矩阵 | 统一实验配置与导出格式 | 全基线+全消融批量跑 | 消融总表+图集 | 每个主张有对应证据 |
 | W13-W14 | TODO | 鲁棒性与失败模式 | 失败路径注入与可观测性增强 | 同步偏差/外参偏差/低纹理等实验 | 失败模式章节素材 | 失败路径可复现并可解释 |
 | W15 | TODO | 论文初稿与图表定稿 | 统一符号、术语、图表风格，整理方法与实验章节 | 内部审阅一轮 | 初稿v1+补充材料草案 | 结构完整、证据闭环 |
@@ -191,7 +191,37 @@ P2 三档共性证据：
 
 严格门禁结论：
 - 最优组合（`d_r=0.70, obs_trace=55, c_obs=0.35, tau_obs=8, s_max∈[1.8,2.2]`）仍未满足 strict 条件 `rpe_p95_improve>=20%`。
-- W7-W8 状态保持 `BLOCKED`，不得标注 `DONE`，不进入 W9+。
+- W7-W8 状态保持 `BLOCKED`，不得标注 `DONE`。
+- 例外条款：允许在“W8 冻结基线”前提下推进 W9-W10 受控试验，但不得回写为 W7-W8 完成。
+
+## 4.8 W8 冻结基线后 W9-W10 收敛状态（2026-05-29）
+冻结基线（W8）：
+- `d_r=0.70, obs_trace=55, c_obs=0.35, tau_obs=8, s_max=2.0`（`s_max` 仅在 `1.8~2.2` 内小范围等价验证）。
+- W8 维持 `BLOCKED` 原因：`rpe_p95_improve<20%`（主效应不足）。
+
+W9 阶段（`alpha_NIS`）小批三档（`4序列×2模态×3次`）：
+| 档位 | 结果目录 | 关键参数 | Gate-W10 | 关键结论 |
+|---|---|---|---|---|
+| A0 | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_A0_smallbatch` | `eta=0.02,rho=0.985,alpha_max=6` | FAIL | `focus_rpe_p95_improve=-9.53%`，`focus_nis_drop=0%` |
+| A1 | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_A1_smallbatch` | `eta=0.03,rho=0.98,alpha_max=8` | FAIL | `focus_rpe_p95_improve=-9.45%`，`focus_nis_drop=-1.92%` |
+| A2 | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_A2_smallbatch` | `eta=0.04,rho=0.975,alpha_max=10` | FAIL | `focus_rpe_p95_improve=-9.45%`，`focus_nis_drop=-1.92%` |
+
+W10 阶段（`zeta_RV + 质量门控`）三档（固定 A0）：
+| 档位 | 结果目录 | Gate-W10 | 关键失败项 |
+|---|---|---|---|
+| C0 | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_C0_smallbatch` | FAIL | `committed_drop=47.03%`，`rpe_degrade=50.16%` |
+| C1 | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_C1_smallbatch` | FAIL | `committed_drop=35.65%`，`rpe_degrade=14.92%` |
+| C2 | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_C2_smallbatch` | FAIL | `committed_drop=53.36%`，`rpe_degrade=69.12%` |
+
+最小修正回合（仍限 contrib3 参数）：
+| 回合 | 结果目录 | 设定 | Gate-W10 | 关键结论 |
+|---|---|---|---|---|
+| R1 | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_R1_zeta_only_smallbatch` | `zeta_enable=1, gate_enable=0` | FAIL | `committed_drop=-1.16%`（恢复），但 `rpe_degrade=14.45%`，`focus_rpe_p95_improve=-15.61%` |
+
+阶段结论：
+- W9-W10 代码与脚本链路已落地并可稳定运行（`radar_starved=0`，诊断列完整，`alpha_nis_sat_rate=0`）。
+- 但在当前数据与公式下，strict Gate-W10 仍未通过；主失败项始终为 `focus_rpe_p95_improve<10%`，且开启质量门控会显著拉低 `committed_count`。
+- 按规则：W9-W10 必须保持 `BLOCKED`，不得标记 `DONE`，不进入 W11+。
 
 ## 5. 目录与命名规范（统一结果资产）
 建议根目录：`<dataset_root>/results/dvc_rrxio_publish/`

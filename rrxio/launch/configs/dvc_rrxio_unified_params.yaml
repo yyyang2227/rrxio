@@ -6,7 +6,7 @@ dvc_diag_output_dir: ""             # Output directory for dvc_diag_<run_id>.csv
 dvc_run_id: ""                      # Unique run identifier used in diagnostics and manifests.
 
 dvc_rrxio:
-  cov_mode: "base"                  # Radar covariance mode: base | fixed | alpha_r | alpha_r_sk.
+  cov_mode: "alpha_r_sk"            # Radar covariance mode: base | fixed | alpha_r | alpha_r_sk | alpha_r_sk_nis_rv.
   fixed_scale: 2.0                  # Multiplicative scale used only when cov_mode=fixed.
   alpha_r:
     w_cond: 0.7                     # Weight of condition-number degradation term.
@@ -17,20 +17,40 @@ dvc_rrxio:
     alpha_r_max: 5.0                # Upper bound of alpha_R inflation.
     sigma_min2: 0.0001              # Minimum variance floor for SPD protection.
   s_k:
-    enable: false                   # Enable directional S_k covariance shaping on top of alpha_R.
+    enable: true                    # Enable directional S_k covariance shaping on top of alpha_R.
     apply_gate_enable: true         # Enable light-weight S_k apply gate (lambda3/d_r/n_targets conditions).
     tau_obs: 8.0                    # Observability eigenvalue threshold for weak-direction inflation.
-    c_obs: 1.5                      # Gain applied to weak-direction inflation.
-    s_max: 3.0                      # Upper bound of directional inflation factor s_i.
+    c_obs: 0.35                     # W8 frozen baseline: directional gain.
+    s_max: 2.0                      # W8 frozen baseline: directional inflation cap (tested 1.8~2.2).
     eps_lambda: 0.000001            # Numerical epsilon added to U^T U before eigendecomposition.
     lambda3_apply_max: 2.0          # Apply S_k only when weakest observability eigenvalue is <= this threshold.
-    d_r_apply_min: 0.55             # Apply S_k only when alpha_R degradation score d_r is >= this threshold.
+    d_r_apply_min: 0.70             # W8 frozen baseline: apply threshold for alpha_R degradation score.
     n_targets_apply_max: 40.0       # Apply S_k only when radar target count is <= this threshold.
-    obs_trace_apply_max: 1000000000000.0  # Apply S_k only when observability trace is <= this threshold (large default disables).
+    obs_trace_apply_max: 55.0       # W8 frozen baseline: observability trace gate.
     obs_aniso_apply_min: 0.0        # Apply S_k only when observability anisotropy is >= this threshold.
+  contrib3:
+    enable: false                   # Master switch for W9-W10 contribution chain (alpha_NIS + zeta_RV + quality gate).
+    alpha_nis_enable: true          # Enable NIS-driven inflation feedback.
+    eta: 0.03                       # NIS feedback gain in alpha_nis update law.
+    rho: 0.98                       # Forgetting factor when radar update is skipped/rejected.
+    alpha_max: 8.0                  # Saturation upper bound for alpha_nis.
+    zeta_enable: true               # Enable radar-visual coupling scale zeta_RV.
+    theta0: -1.2                    # zeta_RV bias term.
+    theta1: 0.6                     # zeta_RV weight for radar degradation d_r.
+    theta2: 0.4                     # zeta_RV weight for visual degradation d_v.
+    theta3: 0.8                     # zeta_RV cross-term weight d_r*d_v.
+    zeta_max: 3.0                   # Saturation upper bound for zeta_RV.
+    gate_enable: true               # Enable explicit quality gate for radar update acceptance.
+    tau_r_high: 0.55                # High radar quality threshold.
+    tau_r_low: 0.35                 # Low radar quality threshold for cross-modal gate.
+    tau_v_low: 0.45                 # Visual low-quality threshold used in cross-modal gate.
+    visual_features_ref: 25.0       # Reference valid-feature count for visual sparsity proxy.
+    visual_stale_ref_s: 0.20        # Reference time gap (s) for visual staleness proxy.
+    visual_w_sparse: 1.0            # Weight of visual sparsity term in d_v.
+    visual_w_stale: 1.0             # Weight of visual staleness term in d_v.
 
   scheduler:
-    mode: "legacy"                  # Scheduler mode: legacy | event_stage1 | event_stage2.
+    mode: "event_stage2"            # Scheduler mode: legacy | event_stage1 | event_stage2.
     max_events: 2048                # Maximum queued events before overflow policy triggers.
     watermark_margin_s: 0.002       # Required IMU lead over event timestamp in seconds.
     watermark_max_wait_s: 0.200     # Max wait before watermark timeout/drop handling in seconds.
