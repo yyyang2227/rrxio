@@ -171,6 +171,8 @@ def read_diag_stats(diag_file):
 
     with open(diag_file, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
+        fields = set(reader.fieldnames or [])
+        has_committed_column = "radar_update_committed" in fields
         quality_reject_consecutive = 0
         for row in reader:
             stats["rows"] += 1
@@ -178,10 +180,12 @@ def read_diag_stats(diag_file):
                 stats["nis_valid_count"] += 1
                 if row.get("nis_exceed_95", "").strip() == "1":
                     stats["nis_exceed_count"] += 1
-            if row.get("radar_update_committed", "").strip() == "1":
+            if has_committed_column and row.get("radar_update_committed", "").strip() == "1":
                 stats["committed_count"] += 1
             if row.get("use_radar_update", "").strip() == "1":
                 stats["use_radar_update_count"] += 1
+                if not has_committed_column:
+                    stats["committed_count"] += 1
             is_quality_reject = row.get("radar_update_reject_reason", "").strip() == "quality_gate"
             if is_quality_reject:
                 stats["quality_reject_count"] += 1

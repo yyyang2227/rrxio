@@ -282,6 +282,37 @@ W10 阶段（`zeta_RV + 质量门控`）三档（固定 A0）：
 - W10 visual-only 状态：`BLOCKED`，不得标记 `DONE`；当前可继承基线为 V4。
 - 下一最小修正方向：逐帧关联 `zeta_rv / quality_soft_scale / alpha_nis_new` 与 RPE95 spike，定位少数长尾段，而不是继续全局硬拒绝或扩大参数网格。
 
+## 4.11 W10 对原始仓库基线复核与 NIS 口径修正（2026-05-31）
+对比口径修正：
+- 投稿主结论必须对比原始仓库输出：`baseline_v1/original_visual_w10_metrics.csv`，而不是只对比 W8/W10 中间基线。
+- `gate_w10_check.py` 新增外部基线输入：`--base_metrics`、`--base_manifest`、`--base_label`。
+- W1 原始诊断只有 `use_radar_update`，没有 W6 后的 `radar_update_committed`；汇总脚本将其作为 legacy committed proxy，保证原始结果可参与同一指标表，但不伪造 NIS。
+
+V4 对原始 W1 visual 基线的复核结果：
+| 指标 | 原始 W1 | 当前 V4 | 变化 | 判定 |
+|---|---:|---:|---:|---|
+| ATE median | `0.09718` | `0.09529` | `-1.95%` | 改善 |
+| RPE median | `0.08071` | `0.07870` | `-2.49%` | 改善 |
+| RPE95 median | `0.12567` | `0.12858` | `-2.32%` | 长尾变差 |
+| runtime median | `10.34585s` | `10.36817s` | `+0.22%` | 总体可控 |
+| committed count | `16098` | `15804` | `-1.83%` | 门限内 |
+| NIS exceed rate | 原始不可比 | `1.997%` | 低于理论 `5%` | 偏保守 |
+
+分组异常：
+- `gym` 与 `outdoor_campus` 的 runtime 分别约 `+144.68%` 与 `+154.00%`，被全局 median 掩盖，后续 Gate 必须加入 per-dataset runtime 或 p95 runtime 护栏。
+- RPE95 主要负贡献来自 `gym`、`mocap_easy`、`outdoor_street`；其中 `outdoor_street` 同时出现 ATE/RPE/RPE95 均变差。
+- NIS 分组不一致：`mocap_difficult/visual` 超限率 `11.51%`（偏过自信），其余多数 visual 组低于 `1%`（偏保守），只有 `mocap_dark_fast/visual=3.18%` 接近合理区间。
+
+NIS 口径修正：
+- NIS 不是越低越好，也不是越高越好。三维速度观测在一致估计下，超过 `chi2_3_95` 的比例应接近 `5%`。
+- `gate_w10_check.py` 新增 `nis_gate_mode=band`，默认关注当前 NIS 是否处于合理带宽 `[1%,8%]` 并接近 `5%`，替代单纯追求相对下降。
+- 当前 V4 `health_pass=true`、`strict_pass=false`：总量指标有改善，但 RPE95 长尾和分组 NIS 一致性仍未达标。
+
+参数清理：
+- 删除废弃的 top-level `scheduler_backpressure_*` 与 `scheduler_drain_timeout_s` 参数入口。
+- 回压参数统一由 `dvc_rrxio/scheduler/*` 读取，避免旧 launch arg 或临时 YAML 覆盖统一配置。
+- 当前保留 `default_backpressure_depth` 仅为 `rrxio_rosbag_loader.cpp` 内部默认值，不再是外部配置项。
+
 ## 5. 目录与命名规范（统一结果资产）
 建议根目录：`<dataset_root>/results/dvc_rrxio_publish/`
 

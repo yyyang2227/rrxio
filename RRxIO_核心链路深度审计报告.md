@@ -304,6 +304,24 @@
   - 机制健康已改善，但 RPE95 长尾未改善；W10 visual-only 必须保持 `BLOCKED`。
   - 后续应做逐帧 spike 对齐，而不是继续扩大全局参数搜索。
 
+8.4 W10 对原始仓库基线复核与 NIS 一致性修正（2026-05-31）：
+- 入口修正：
+  - `summarize_w10_results.py` 将 W1 原始诊断中的 `use_radar_update` 映射为 legacy committed proxy，使 `baseline_v1` 能与 W10 指标表对齐。
+  - `gate_w10_check.py` 新增 `--base_metrics/--base_manifest/--base_label`，可直接把原始仓库输出作为主对比基线。
+  - `gate_w10_check.py` 新增 `nis_gate_mode=band`，默认检查 NIS 超限率是否位于合理区间而不是单纯下降。
+- 复核证据：
+  - 原始 W1 visual 基线：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/baseline_v1/original_visual_w10_metrics.csv`
+  - 当前 V4 对原始 W1：ATE `-1.95%`、RPE `-2.49%`、runtime `+0.22%`、committed drop `1.83%`。
+  - 当前未解决：RPE95 `-2.32%`，strict Gate 仍失败。
+  - NIS 分组异常：全局 `1.997%` 偏保守，`mocap_difficult/visual=11.51%` 偏过自信，其余多数 visual 组 `<1%` 偏保守。
+- 参数空间清理：
+  - 删除 top-level `scheduler_backpressure_*` 与 `scheduler_drain_timeout_s` 外部参数入口。
+  - `rrxio_rosbag_loader.cpp` 只读取 `dvc_rrxio/scheduler/*`，避免统一 YAML 与旧 launch arg 之间的隐藏覆盖。
+- 当前判定：
+  - 相对原始仓库，当前系统已经改善 ATE 和中位 RPE，但没有改善 RPE95 长尾。
+  - NIS 目标必须改为“接近理论一致性区间”，不能继续使用“越低越好”的优化目标。
+  - W10 继续保持 `BLOCKED`，下一步应做 RPE95 spike 与诊断量逐帧关联。
+
 ---
 
 ## 9. 维护约定（后续代码改动时同步更新）
@@ -395,3 +413,8 @@
   - 配置：统一参数固化当前 visual-only 阻塞最优基线 `alpha_min=1.0,zeta_min=1.0,gate_soft_scale_max=1.4,zeta_dr_ref=0.60,zeta_dv_ref=0.60`。
   - 实验：V4 九数据集 visual-only `health_pass=true`、`strict_pass=false`；V5 硬拒绝探针验证低 `q_r` 帧不能全局拒绝。
   - 结论：W10 visual-only 当前最佳仍为 `BLOCKED`，不得标记 `DONE`；下一轮需逐帧定位 RPE95 spike。
+- 2026-05-31（原始基线复核与 NIS 口径修正）：
+  - 脚本：`gate_w10_check.py` 支持外部原始基线与 NIS band 门禁；`summarize_w10_results.py` 支持 W1 旧诊断 committed 统计。
+  - 配置：删除废弃 scheduler 顶层参数，统一为 `dvc_rrxio/scheduler/*`。
+  - 实验：V4 相对原始 W1 visual 基线改善 ATE/RPE，但 RPE95 变差；分组 NIS 暴露多数过保守、`mocap_difficult` 过自信的问题。
+  - 结论：调度和一致性机制并非无效，但当前协方差调制未命中长尾误差来源，W10 保持 `BLOCKED`。

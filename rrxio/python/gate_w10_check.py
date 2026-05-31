@@ -95,6 +95,16 @@ def parse_modalities(raw):
     return modalities
 
 
+def filter_modalities(rows, modalities):
+    return [r for r in rows if text(r.get("modality", "")).lower() in modalities]
+
+
+def find_disallowed_modalities(rows, modalities):
+    return sorted(
+        {text(r.get("modality", "")).lower() for r in rows if text(r.get("modality", "")).lower() not in modalities}
+    )
+
+
 def check_diag_file(path, require_full_columns):
     info = {
         "path": path,
@@ -226,6 +236,9 @@ def main():
     parser.add_argument("--results_root", required=True)
     parser.add_argument("--manifest", default="")
     parser.add_argument("--metrics", default="")
+    parser.add_argument("--base_manifest", default="", help="Optional original-baseline manifest for traceability checks")
+    parser.add_argument("--base_metrics", default="", help="Optional original-baseline metrics CSV used as comparison base")
+    parser.add_argument("--base_label", default="original", help="Label used in report when --base_metrics is provided")
     parser.add_argument("--report_json", default="")
     parser.add_argument("--stage_filter", default="")
     parser.add_argument("--mode_base", default="alpha_r_sk")
@@ -235,6 +248,11 @@ def main():
         default="mocap_easy,mocap_medium,mocap_difficult,mocap_dark,mocap_dark_fast,gym,indoor_floor,outdoor_campus,outdoor_street",
     )
     parser.add_argument("--modalities", default="visual", help="Comma-separated modalities to gate: visual,thermal")
+    parser.add_argument("--nis_gate_mode", default="band", choices=["band", "relative_drop"])
+    parser.add_argument("--nis_exceed_rate_min", type=float, default=0.01)
+    parser.add_argument("--nis_exceed_rate_max", type=float, default=0.08)
+    parser.add_argument("--nis_exceed_rate_target", type=float, default=0.05)
+    parser.add_argument("--nis_group_gate_enable", type=int, default=1)
     parser.add_argument("--min_rpe_p95_improve_focus", type=float, default=0.10)
     parser.add_argument("--min_nis_relative_drop_focus", type=float, default=0.15)
     parser.add_argument("--max_alpha_nis_sat_rate_focus", type=float, default=0.10)
@@ -265,12 +283,20 @@ def main():
         "results_root": args.results_root,
         "manifest": manifest,
         "metrics": metrics,
+        "base_manifest": args.base_manifest,
+        "base_metrics": args.base_metrics,
         "criteria": {
             "stage_filter": args.stage_filter,
             "mode_base": args.mode_base,
             "mode_full": args.mode_full,
+            "base_label": args.base_label,
             "focus_datasets": args.focus_datasets,
             "modalities": args.modalities,
+            "nis_gate_mode": args.nis_gate_mode,
+            "nis_exceed_rate_min": args.nis_exceed_rate_min,
+            "nis_exceed_rate_max": args.nis_exceed_rate_max,
+            "nis_exceed_rate_target": args.nis_exceed_rate_target,
+            "nis_group_gate_enable": int(args.nis_group_gate_enable) != 0,
             "min_rpe_p95_improve_focus": args.min_rpe_p95_improve_focus,
             "min_nis_relative_drop_focus": args.min_nis_relative_drop_focus,
             "max_alpha_nis_sat_rate_focus": args.max_alpha_nis_sat_rate_focus,
@@ -317,16 +343,32 @@ def main():
     else:
         metric_rows = load_csv_rows(metrics)
 
+    if args.base_metrics:
+        if not os.path.isfile(args.base_metrics):
+            append_fail(failures, "base metrics not found: %s" % args.base_metrics)
+            base_metric_rows_external = []
+        else:
+            base_metric_rows_external = load_csv_rows(args.base_metrics)
+    else:
+        base_metric_rows_external = []
+
+    if args.base_manifest:
+        if not os.path.isfile(args.base_manifest):
+            append_fail(failures, "base manifest not found: %s" % args.base_manifest)
+            base_manifest_rows_external = []
+        else:
+            base_manifest_rows_external = load_csv_rows(args.base_manifest)
+    else:
+        base_manifest_rows_external = []
+
     if args.stage_filter:
         manifest_rows = [r for r in manifest_rows if text(r.get("stage", "")) == args.stage_filter]
         metric_rows = [r for r in metric_rows if text(r.get("stage", "")) == args.stage_filter]
 
-    manifest_bad_modalities = sorted(
-        {text(r.get("modality", "")).lower() for r in manifest_rows if text(r.get("modality", "")).lower() not in modalities}
-    )
-    metric_bad_modalities = sorted(
-        {text(r.get("modality", "")).lower() for r in metric_rows if text(r.get("modality", "")).lower() not in modalities}
-    )
+    manifest_bad_modalities = find_disallowed_modalities(manifest_rows, modalities)
+    metric_bad_modalities = find_disallowed_modalities(metric_rows, modalities)
+    base_metric_bad_modalities = find_disallowed_modalities(base_metric_rows_external, modalities)
+    base_manifest_bad_modalities = find_disallowed_modalities(base_manifest_rows_external, modalities)
     if manifest_bad_modalities:
         append_fail(
             failures,
@@ -339,12 +381,28 @@ def main():
             "metrics contains modalities outside %s: %s"
             % (",".join(sorted(modalities)), ",".join(metric_bad_modalities)),
         )
-    manifest_rows = [r for r in manifest_rows if text(r.get("modality", "")).lower() in modalities]
-    metric_rows = [r for r in metric_rows if text(r.get("modality", "")).lower() in modalities]
+    if base_metric_bad_modalities:
+        append_fail(
+            failures,
+            "base metrics contains modalities outside %s: %s"
+            % (",".join(sorted(modalities)), ",".join(base_metric_bad_modalities)),
+        )
+    if base_manifest_bad_modalities:
+        append_fail(
+            failures,
+            "base manifest contains modalities outside %s: %s"
+            % (",".join(sorted(modalities)), ",".join(base_manifest_bad_modalities)),
+        )
+    manifest_rows = filter_modalities(manifest_rows, modalities)
+    metric_rows = filter_modalities(metric_rows, modalities)
+    base_metric_rows_external = filter_modalities(base_metric_rows_external, modalities)
+    base_manifest_rows_external = filter_modalities(base_manifest_rows_external, modalities)
     report["checks"]["modalities"] = {
         "selected": sorted(modalities),
         "manifest_disallowed": manifest_bad_modalities,
         "metrics_disallowed": metric_bad_modalities,
+        "base_manifest_disallowed": base_manifest_bad_modalities,
+        "base_metrics_disallowed": base_metric_bad_modalities,
     }
 
     success_manifest = [r for r in manifest_rows if r.get("status", "") == "SUCCESS"]
@@ -355,7 +413,8 @@ def main():
     mode_base = args.mode_base.strip().lower()
     mode_full = args.mode_full.strip().lower()
 
-    if len(by_mode_manifest.get(mode_base, [])) == 0:
+    using_external_base = bool(args.base_metrics)
+    if (not using_external_base) and len(by_mode_manifest.get(mode_base, [])) == 0:
         append_fail(failures, "no SUCCESS run for cov_mode=%s" % mode_base)
     if len(by_mode_manifest.get(mode_full, [])) == 0:
         append_fail(failures, "no SUCCESS run for cov_mode=%s" % mode_full)
@@ -364,10 +423,13 @@ def main():
     for row in metric_rows:
         by_mode_metrics[text(row.get("cov_mode", "")).lower()].append(row)
 
-    base_rows = by_mode_metrics.get(mode_base, [])
+    base_rows = base_metric_rows_external if using_external_base else by_mode_metrics.get(mode_base, [])
     full_rows = by_mode_metrics.get(mode_full, [])
     if not base_rows:
-        append_fail(failures, "no metric rows for cov_mode=%s" % mode_base)
+        if using_external_base:
+            append_fail(failures, "no metric rows in base metrics: %s" % args.base_metrics)
+        else:
+            append_fail(failures, "no metric rows for cov_mode=%s" % mode_base)
     if not full_rows:
         append_fail(failures, "no metric rows for cov_mode=%s" % mode_full)
 
@@ -387,6 +449,7 @@ def main():
         "runtime_increase": runtime_increase,
         "nis_abs_inc_pp": nis_abs_inc_pp,
         "committed_drop": committed_drop,
+        "base_source": args.base_label if using_external_base else mode_base,
     }
 
     if strict_gate_enable:
@@ -396,8 +459,9 @@ def main():
             append_fail(failures, "RPE degrade failed: got=%s need <= %.6f" % (str(rpe_degrade), args.max_rpe_degrade))
         if (not finite(runtime_increase)) or runtime_increase > args.max_runtime_increase:
             append_fail(failures, "runtime increase failed: got=%s need <= %.6f" % (str(runtime_increase), args.max_runtime_increase))
-        if (not finite(nis_abs_inc_pp)) or nis_abs_inc_pp > args.max_nis_abs_increase_pp:
-            append_fail(failures, "NIS absolute increase failed: got=%s need <= %.6f pp" % (str(nis_abs_inc_pp), args.max_nis_abs_increase_pp))
+        if args.nis_gate_mode == "relative_drop":
+            if (not finite(nis_abs_inc_pp)) or nis_abs_inc_pp > args.max_nis_abs_increase_pp:
+                append_fail(failures, "NIS absolute increase failed: got=%s need <= %.6f pp" % (str(nis_abs_inc_pp), args.max_nis_abs_increase_pp))
         if (not finite(committed_drop)) or committed_drop > args.max_committed_drop:
             append_fail(failures, "committed drop failed: got=%s need <= %.6f" % (str(committed_drop), args.max_committed_drop))
 
@@ -425,6 +489,11 @@ def main():
 
     rpe_p95_improve_focus = safe_rate((focus_base_agg["rpe_p95"] - focus_full_agg["rpe_p95"]), focus_base_agg["rpe_p95"])
     nis_relative_drop_focus = safe_rate((focus_base_agg["nis_rate"] - focus_full_agg["nis_rate"]), focus_base_agg["nis_rate"])
+    nis_consistency_error_focus = (
+        abs(focus_full_agg["nis_rate"] - args.nis_exceed_rate_target)
+        if finite(focus_full_agg["nis_rate"])
+        else float("nan")
+    )
     alpha_nis_sat_rate_focus = focus_full_agg["alpha_sat_rate"]
 
     report["checks"]["focus"] = {
@@ -432,11 +501,39 @@ def main():
         "full": focus_full_agg,
         "rpe_p95_improve_focus": rpe_p95_improve_focus,
         "nis_relative_drop_focus": nis_relative_drop_focus,
+        "nis_consistency_error_focus": nis_consistency_error_focus,
+        "nis_gate_mode": args.nis_gate_mode,
         "alpha_nis_sat_rate_focus": alpha_nis_sat_rate_focus,
         "quality_reject_rate_focus": focus_full_agg["quality_reject_rate"],
         "hard_reject_rate_focus": focus_full_agg["hard_reject_rate"],
         "max_consecutive_quality_reject_focus": focus_full_agg["max_consecutive_quality_reject"],
     }
+
+    nis_group_checks = []
+    if args.nis_gate_mode == "band":
+        grouped_full_focus = defaultdict(list)
+        for row in full_focus:
+            key = "%s/%s" % (text(row.get("dataset", "")), text(row.get("modality", "")))
+            grouped_full_focus[key].append(row)
+        for key in sorted(grouped_full_focus.keys()):
+            agg = summarize_mode(grouped_full_focus[key])
+            nis_rate = agg["nis_rate"]
+            group_pass = finite(nis_rate) and args.nis_exceed_rate_min <= nis_rate <= args.nis_exceed_rate_max
+            nis_group_checks.append(
+                {
+                    "group": key,
+                    "nis_rate": nis_rate,
+                    "target_error": abs(nis_rate - args.nis_exceed_rate_target) if finite(nis_rate) else float("nan"),
+                    "pass": group_pass,
+                }
+            )
+            if strict_gate_enable and int(args.nis_group_gate_enable) != 0 and not group_pass:
+                append_fail(
+                    failures,
+                    "focus NIS group band failed for %s: got=%s need in [%.6f, %.6f]"
+                    % (key, str(nis_rate), args.nis_exceed_rate_min, args.nis_exceed_rate_max),
+                )
+    report["checks"]["nis_by_group"] = nis_group_checks
 
     health_failures = []
     if health_gate_enable:
@@ -478,12 +575,21 @@ def main():
                 "focus rpe_p95 improve failed: got=%s need >= %.6f"
                 % (str(rpe_p95_improve_focus), args.min_rpe_p95_improve_focus),
             )
-        if (not finite(nis_relative_drop_focus)) or nis_relative_drop_focus < args.min_nis_relative_drop_focus:
-            append_fail(
-                failures,
-                "focus NIS relative drop failed: got=%s need >= %.6f"
-                % (str(nis_relative_drop_focus), args.min_nis_relative_drop_focus),
-            )
+        if args.nis_gate_mode == "relative_drop":
+            if (not finite(nis_relative_drop_focus)) or nis_relative_drop_focus < args.min_nis_relative_drop_focus:
+                append_fail(
+                    failures,
+                    "focus NIS relative drop failed: got=%s need >= %.6f"
+                    % (str(nis_relative_drop_focus), args.min_nis_relative_drop_focus),
+                )
+        else:
+            nis_rate = focus_full_agg["nis_rate"]
+            if (not finite(nis_rate)) or nis_rate < args.nis_exceed_rate_min or nis_rate > args.nis_exceed_rate_max:
+                append_fail(
+                    failures,
+                    "focus NIS consistency band failed: got=%s need in [%.6f, %.6f] around target %.6f"
+                    % (str(nis_rate), args.nis_exceed_rate_min, args.nis_exceed_rate_max, args.nis_exceed_rate_target),
+                )
         if (not finite(alpha_nis_sat_rate_focus)) or alpha_nis_sat_rate_focus > args.max_alpha_nis_sat_rate_focus:
             append_fail(
                 failures,

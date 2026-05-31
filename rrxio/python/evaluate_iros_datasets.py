@@ -130,8 +130,8 @@ def _append_manifest_row(manifest_csv, row):
         "dvc_c3_tau_r_low", "dvc_c3_tau_v_low", "dvc_c3_gate_hard_qr_min", "dvc_c3_gate_soft_k_r",
         "dvc_c3_gate_soft_k_v", "dvc_c3_gate_soft_scale_max",
         "dvc_c3_visual_features_ref", "dvc_c3_visual_stale_ref_s", "dvc_c3_visual_w_sparse", "dvc_c3_visual_w_stale",
-        "dvc_scheduler_max_events", "dvc_scheduler_backpressure_depth", "dvc_scheduler_backpressure_high",
-        "dvc_scheduler_backpressure_low", "dvc_scheduler_backpressure_timeout_s", "dvc_scheduler_imu_fast_path"
+        "dvc_scheduler_max_events", "dvc_scheduler_backpressure_high", "dvc_scheduler_backpressure_low",
+        "dvc_scheduler_backpressure_timeout_s", "dvc_scheduler_drain_timeout_s", "dvc_scheduler_imu_fast_path"
     ]
     is_new = not os.path.isfile(manifest_csv)
     with open(manifest_csv, "a", newline="", encoding="utf-8") as f:
@@ -229,19 +229,14 @@ def _write_dvc_unified_config(path,
         "    imu_fast_path: {imu_fast_path}\n"
         "    backpressure_high: {backpressure_high}\n"
         "    backpressure_low: {backpressure_low}\n"
+        "    backpressure_timeout_s: {backpressure_timeout_s}\n"
+        "    drain_timeout_s: {drain_timeout_s}\n"
         "\n"
         "  perf_mode: {perf_mode}\n"
         "  perf:\n"
         "    pub_decimation: {pub_decimation}\n"
         "    tf_decimation: {tf_decimation}\n"
         "    diag_flush_every_n: {diag_flush_every_n}\n"
-        "\n"
-        "scheduler_backpressure_depth: {backpressure_depth}\n"
-        "scheduler_backpressure_high: {legacy_backpressure_high}\n"
-        "scheduler_backpressure_low: {legacy_backpressure_low}\n"
-        "scheduler_backpressure_timeout_s: {backpressure_timeout_s}\n"
-        "scheduler_drain_timeout_s: {drain_timeout_s}\n"
-        "\n"
         "max_r_cond: {max_r_cond}\n"
     ).format(
         dvc_diag_output_dir=_yaml_quote(diag_output_dir),
@@ -304,15 +299,12 @@ def _write_dvc_unified_config(path,
         imu_fast_path=_yaml_bool(imu_fast_path_enabled),
         backpressure_high=args.dvc_scheduler_backpressure_high,
         backpressure_low=args.dvc_scheduler_backpressure_low,
+        backpressure_timeout_s=args.dvc_scheduler_backpressure_timeout_s,
+        drain_timeout_s=args.dvc_scheduler_drain_timeout_s,
         perf_mode=_yaml_quote(perf_mode),
         pub_decimation=args.dvc_perf_pub_decimation,
         tf_decimation=args.dvc_perf_tf_decimation,
         diag_flush_every_n=args.dvc_perf_diag_flush_every_n,
-        backpressure_depth=args.dvc_scheduler_backpressure_depth,
-        legacy_backpressure_high=args.dvc_scheduler_backpressure_high,
-        legacy_backpressure_low=args.dvc_scheduler_backpressure_low,
-        backpressure_timeout_s=args.dvc_scheduler_backpressure_timeout_s,
-        drain_timeout_s=args.dvc_scheduler_drain_timeout_s,
         max_r_cond=args.dvc_max_r_cond,
     )
     with open(path, "w", encoding="utf-8") as f:
@@ -565,10 +557,10 @@ def run_feature(args, n_feature, git_rev_root, git_rev_reve):
                                     "dvc_c3_visual_w_sparse": args.dvc_c3_visual_w_sparse,
                                     "dvc_c3_visual_w_stale": args.dvc_c3_visual_w_stale,
                                     "dvc_scheduler_max_events": args.dvc_scheduler_max_events,
-                                    "dvc_scheduler_backpressure_depth": args.dvc_scheduler_backpressure_depth,
                                     "dvc_scheduler_backpressure_high": args.dvc_scheduler_backpressure_high,
                                     "dvc_scheduler_backpressure_low": args.dvc_scheduler_backpressure_low,
                                     "dvc_scheduler_backpressure_timeout_s": args.dvc_scheduler_backpressure_timeout_s,
+                                    "dvc_scheduler_drain_timeout_s": args.dvc_scheduler_drain_timeout_s,
                                     "dvc_scheduler_imu_fast_path": args.dvc_scheduler_imu_fast_path,
                                 },
                             )
@@ -695,7 +687,6 @@ def main():
     parser.add_argument("--dvc_scheduler_watermark_margin_s", type=float, default=0.002)
     parser.add_argument("--dvc_scheduler_watermark_max_wait_s", type=float, default=0.200)
     parser.add_argument("--dvc_scheduler_radar_imu_window_s", type=float, default=0.020)
-    parser.add_argument("--dvc_scheduler_backpressure_depth", type=int, default=-1)
     parser.add_argument("--dvc_scheduler_backpressure_high", type=int, default=-1)
     parser.add_argument("--dvc_scheduler_backpressure_low", type=int, default=-1)
     parser.add_argument("--dvc_scheduler_backpressure_timeout_s", type=float, default=5.0)

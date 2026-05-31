@@ -188,26 +188,21 @@ int main(int argc, char** argv)
   double bag_duration = -1.;
   nh_private.param("bag_duration", bag_duration, bag_duration);
 
-  int scheduler_backpressure_depth = -1;
-  nh_private.param("scheduler_backpressure_depth", scheduler_backpressure_depth, scheduler_backpressure_depth);
-
   int scheduler_backpressure_high = -1;
   nh_private.param("dvc_rrxio/scheduler/backpressure_high",
                    scheduler_backpressure_high,
                    scheduler_backpressure_high);
-  nh_private.param("scheduler_backpressure_high", scheduler_backpressure_high, scheduler_backpressure_high);
 
   int scheduler_backpressure_low = -1;
   nh_private.param("dvc_rrxio/scheduler/backpressure_low", scheduler_backpressure_low, scheduler_backpressure_low);
-  nh_private.param("scheduler_backpressure_low", scheduler_backpressure_low, scheduler_backpressure_low);
 
   double scheduler_backpressure_timeout_s = 5.0;
-  nh_private.param("scheduler_backpressure_timeout_s",
+  nh_private.param("dvc_rrxio/scheduler/backpressure_timeout_s",
                    scheduler_backpressure_timeout_s,
                    scheduler_backpressure_timeout_s);
 
   double scheduler_drain_timeout_s = 120.0;
-  nh_private.param("scheduler_drain_timeout_s", scheduler_drain_timeout_s, scheduler_drain_timeout_s);
+  nh_private.param("dvc_rrxio/scheduler/drain_timeout_s", scheduler_drain_timeout_s, scheduler_drain_timeout_s);
 
   double sigma_v_b_x = 0.0;
   nh_private.param("sigma_v_b_x", sigma_v_b_x, sigma_v_b_x);
@@ -255,13 +250,9 @@ int main(int argc, char** argv)
   const bool imu_fast_path  = rovioNode.isImuFastPathEnabled();
   const int default_backpressure_depth =
       static_cast<int>(std::max<size_t>(32, rovioNode.getSchedulerMaxEvents() / static_cast<size_t>(32)));
-  if (scheduler_backpressure_depth <= 0)
-  {
-    scheduler_backpressure_depth = default_backpressure_depth;
-  }
   if (scheduler_backpressure_high <= 0)
   {
-    scheduler_backpressure_high = scheduler_backpressure_depth;
+    scheduler_backpressure_high = default_backpressure_depth;
   }
   if (scheduler_backpressure_low < 0)
   {

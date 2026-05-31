@@ -51,11 +51,6 @@
     <arg name="dvc_scheduler_radar_imu_window_s" default="0.020"/>
     <arg name="dvc_scheduler_enable_diag" default="False"/>
     <arg name="dvc_scheduler_diag_output_dir" default=""/>
-    <arg name="dvc_scheduler_backpressure_depth" default="-1"/>
-    <arg name="dvc_scheduler_backpressure_high" default="-1"/>
-    <arg name="dvc_scheduler_backpressure_low" default="-1"/>
-    <arg name="dvc_scheduler_backpressure_timeout_s" default="5.0"/>
-    <arg name="dvc_scheduler_drain_timeout_s" default="120.0"/>
     <arg name="dvc_scheduler_imu_fast_path" default="True"/>
     <arg name="dvc_perf_mode" default="normal"/>
     <arg name="dvc_perf_pub_decimation" default="2"/>

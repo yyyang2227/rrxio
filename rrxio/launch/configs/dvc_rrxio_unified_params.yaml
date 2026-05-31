@@ -69,19 +69,14 @@ dvc_rrxio:
     imu_fast_path: true             # Enable IMU fast-path bypass of normal event queue.
     backpressure_high: -1           # High watermark for hysteresis backpressure (-1 uses auto default).
     backpressure_low: -1            # Low watermark for hysteresis backpressure (-1 uses auto default).
+    backpressure_timeout_s: 5.0     # Max blocking wait per backpressure cycle in seconds.
+    drain_timeout_s: 120.0          # Max wait for worker drain at bag end in seconds.
 
   perf_mode: "normal"               # Performance profile: normal | perf.
   perf:
     pub_decimation: 2               # Publish one message every N update cycles.
     tf_decimation: 2                # Publish TF one message every N update cycles.
     diag_flush_every_n: 32          # Flush diagnostic buffer every N rows.
-
-# Legacy scheduler keys consumed by rrxio_rosbag_loader.cpp
-scheduler_backpressure_depth: -1    # Legacy depth trigger for loader backpressure (-1 uses auto default).
-scheduler_backpressure_high: -1     # Legacy high watermark mirror (-1 uses auto default).
-scheduler_backpressure_low: -1      # Legacy low watermark mirror (-1 uses auto default).
-scheduler_backpressure_timeout_s: 5.0  # Max blocking wait per backpressure cycle in seconds.
-scheduler_drain_timeout_s: 120.0    # Max wait for worker drain at bag end in seconds.
 
 # REVE / RRxIO shared conditioning threshold
 max_r_cond: 1000.0                  # Maximum allowed LSQ condition number for REVE acceptance.

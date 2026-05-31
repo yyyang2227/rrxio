@@ -426,6 +426,29 @@
   - 仍未证明其能稳定改善 visual RPE95 长尾；主风险从“机制不可运行”转为“少数轨迹长尾段的协方差调制方向与误差尖峰不匹配”。
   - 下一轮不建议继续大网格扫参，应做逐帧 spike 关联分析，定位 `zeta_rv/quality_soft_scale/alpha_nis_new` 与 RPE95 异常段之间的因果关系。
 
+### 5.14 原始仓库基线复核、NIS一致性口径与参数清理（2026-05-31）
+- 状态：`BLOCKED`（相对原始 W1 有部分收益，但 visual-only strict Gate-W10 仍未通过）
+- 基线口径修正：
+  - 投稿主指标必须对比原始仓库输出：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/baseline_v1/original_visual_w10_metrics.csv`。
+  - W8/W10 中间结果只作为消融，不再作为“系统改进是否有效”的主基线。
+  - `summarize_w10_results.py` 支持 W1 旧诊断结构：当 `radar_update_committed` 不存在但 `use_radar_update` 存在时，用 `use_radar_update` 作为 legacy committed proxy；原始 W1 不具备 NIS 列，因此不伪造原始 NIS。
+- 对原始 W1 的 visual-only 复核：
+  - 总体：ATE `-1.95%`、RPE `-2.49%`、runtime `+0.22%`、committed drop `1.83%`。
+  - 失败：RPE95 `-2.32%`，未达到 `>=10%` 改善要求。
+  - 分组问题：`gym` 与 `outdoor_campus` runtime 分别约 `+144.68%/+154.00%`；`outdoor_street` 的 ATE/RPE/RPE95 均恶化。
+- NIS口径修正：
+  - NIS 超限率应接近三维速度观测的理论 95% 卡方超限比例 `5%`，不是越低越好。
+  - `gate_w10_check.py` 新增 `nis_gate_mode=band`，默认检查当前 NIS 是否位于 `[1%,8%]` 并接近 `5%`。
+  - 当前 V4 全局 NIS 超限率为 `1.997%`，整体偏保守；分组上 `mocap_difficult/visual=11.51%` 偏过自信，其余多数 visual 组 `<1%` 偏保守。
+- 废弃参数清理：
+  - 删除 top-level `scheduler_backpressure_depth/high/low/timeout` 与 `scheduler_drain_timeout_s` 外部入口。
+  - `rrxio_rosbag_loader.cpp` 仅读取 `dvc_rrxio/scheduler/backpressure_high`、`backpressure_low`、`backpressure_timeout_s`、`drain_timeout_s`。
+  - 统一 YAML 成为 DVC 新增参数的唯一配置入口，降低旧参数残留干扰运行的风险。
+- 下一步方向：
+  - 不继续以“整体 NIS 下降”为目标；改为 per-dataset/per-segment NIS band 一致性。
+  - 增加 RPE95 spike 与 `zeta_rv/quality_soft_scale/alpha_nis_new/radar latency` 的逐帧关联，优先定位长尾来源。
+  - Gate 增加 per-dataset runtime 或 runtime p95，避免全局 median 掩盖局部运行时异常。
+
 ### 《边界警示》
 - 以上修正优先级遵循“先消除参数/调度不一致，再引入新统计模型”。
 - 断点 #1/#2 与 W1-W4 门禁均已完成；后续进入 W5+ 时仍需保持“单创新点分阶段消融”。
@@ -696,3 +719,10 @@ addUpdateMeas<2>(v, t_meas);
   - 当前最优：`dvc_w10_visual_v4_selective_inflation`，`health_pass=true`，`strict_pass=false`。
 - 结论：
   - V4 改善 `ATE`、`NIS` 与 runtime，但未改善 visual RPE95 长尾；W10 仍保持 `BLOCKED`，不得标记 `DONE`。
+
+### 2026-05-31（v2.2）
+- 原始基线复核与 NIS 口径修正：
+  - 脚本：`gate_w10_check.py` 新增外部原始基线输入与 `nis_gate_mode=band`；`summarize_w10_results.py` 支持 W1 旧诊断的 `use_radar_update` committed proxy。
+  - 配置：删除废弃 top-level scheduler 回压参数，统一由 `dvc_rrxio/scheduler/*` 读取。
+  - 实验：V4 相对原始 W1 visual 基线改善 ATE/RPE 与总体 runtime，但 RPE95 变差 `2.32%`；分组 NIS 出现“多数偏保守、`mocap_difficult` 偏过自信”的不一致。
+  - 结论：W10 继续 `BLOCKED`；下一轮以分组 NIS band、RPE95 spike 对齐和局部 runtime 长尾为主，不再用“NIS越低越好”的目标函数。
