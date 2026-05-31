@@ -123,9 +123,11 @@ def _append_manifest_row(manifest_csv, row):
         "runtime_s", "export_directory", "diag_file", "sched_diag_file", "perf_mode_requested", "perf_mode_effective",
         "dvc_sk_apply_gate_enable", "dvc_sk_lambda3_apply_max", "dvc_sk_d_r_apply_min", "dvc_sk_n_targets_apply_max",
         "dvc_sk_obs_trace_apply_max", "dvc_sk_obs_aniso_apply_min",
-        "dvc_c3_enable", "dvc_c3_alpha_nis_enable", "dvc_c3_eta", "dvc_c3_rho", "dvc_c3_alpha_max",
+        "dvc_c3_enable", "dvc_c3_alpha_nis_enable", "dvc_c3_eta", "dvc_c3_rho", "dvc_c3_alpha_min", "dvc_c3_alpha_max",
         "dvc_c3_zeta_enable", "dvc_c3_theta0", "dvc_c3_theta1", "dvc_c3_theta2", "dvc_c3_theta3",
-        "dvc_c3_zeta_max", "dvc_c3_gate_enable", "dvc_c3_tau_r_high", "dvc_c3_tau_r_low", "dvc_c3_tau_v_low",
+        "dvc_c3_zeta_min", "dvc_c3_zeta_span", "dvc_c3_zeta_max", "dvc_c3_gate_enable", "dvc_c3_tau_r_high",
+        "dvc_c3_tau_r_low", "dvc_c3_tau_v_low", "dvc_c3_gate_hard_qr_min", "dvc_c3_gate_soft_k_r",
+        "dvc_c3_gate_soft_k_v", "dvc_c3_gate_soft_scale_max",
         "dvc_c3_visual_features_ref", "dvc_c3_visual_stale_ref_s", "dvc_c3_visual_w_sparse", "dvc_c3_visual_w_stale",
         "dvc_scheduler_max_events", "dvc_scheduler_backpressure_depth", "dvc_scheduler_backpressure_high",
         "dvc_scheduler_backpressure_low", "dvc_scheduler_backpressure_timeout_s", "dvc_scheduler_imu_fast_path"
@@ -190,17 +192,24 @@ def _write_dvc_unified_config(path,
         "    alpha_nis_enable: {c3_alpha_nis_enable}\n"
         "    eta: {c3_eta}\n"
         "    rho: {c3_rho}\n"
+        "    alpha_min: {c3_alpha_min}\n"
         "    alpha_max: {c3_alpha_max}\n"
         "    zeta_enable: {c3_zeta_enable}\n"
         "    theta0: {c3_theta0}\n"
         "    theta1: {c3_theta1}\n"
         "    theta2: {c3_theta2}\n"
         "    theta3: {c3_theta3}\n"
+        "    zeta_min: {c3_zeta_min}\n"
+        "    zeta_span: {c3_zeta_span}\n"
         "    zeta_max: {c3_zeta_max}\n"
         "    gate_enable: {c3_gate_enable}\n"
         "    tau_r_high: {c3_tau_r_high}\n"
         "    tau_r_low: {c3_tau_r_low}\n"
         "    tau_v_low: {c3_tau_v_low}\n"
+        "    gate_hard_qr_min: {c3_gate_hard_qr_min}\n"
+        "    gate_soft_k_r: {c3_gate_soft_k_r}\n"
+        "    gate_soft_k_v: {c3_gate_soft_k_v}\n"
+        "    gate_soft_scale_max: {c3_gate_soft_scale_max}\n"
         "    visual_features_ref: {c3_visual_features_ref}\n"
         "    visual_stale_ref_s: {c3_visual_stale_ref_s}\n"
         "    visual_w_sparse: {c3_visual_w_sparse}\n"
@@ -258,17 +267,24 @@ def _write_dvc_unified_config(path,
         c3_alpha_nis_enable=_yaml_bool(args.dvc_c3_alpha_nis_enable),
         c3_eta=args.dvc_c3_eta,
         c3_rho=args.dvc_c3_rho,
+        c3_alpha_min=args.dvc_c3_alpha_min,
         c3_alpha_max=args.dvc_c3_alpha_max,
         c3_zeta_enable=_yaml_bool(args.dvc_c3_zeta_enable),
         c3_theta0=args.dvc_c3_theta0,
         c3_theta1=args.dvc_c3_theta1,
         c3_theta2=args.dvc_c3_theta2,
         c3_theta3=args.dvc_c3_theta3,
+        c3_zeta_min=args.dvc_c3_zeta_min,
+        c3_zeta_span=args.dvc_c3_zeta_span,
         c3_zeta_max=args.dvc_c3_zeta_max,
         c3_gate_enable=_yaml_bool(args.dvc_c3_gate_enable),
         c3_tau_r_high=args.dvc_c3_tau_r_high,
         c3_tau_r_low=args.dvc_c3_tau_r_low,
         c3_tau_v_low=args.dvc_c3_tau_v_low,
+        c3_gate_hard_qr_min=args.dvc_c3_gate_hard_qr_min,
+        c3_gate_soft_k_r=args.dvc_c3_gate_soft_k_r,
+        c3_gate_soft_k_v=args.dvc_c3_gate_soft_k_v,
+        c3_gate_soft_scale_max=args.dvc_c3_gate_soft_scale_max,
         c3_visual_features_ref=args.dvc_c3_visual_features_ref,
         c3_visual_stale_ref_s=args.dvc_c3_visual_stale_ref_s,
         c3_visual_w_sparse=args.dvc_c3_visual_w_sparse,
@@ -516,17 +532,24 @@ def run_feature(args, n_feature, git_rev_root, git_rev_reve):
                                     "dvc_c3_alpha_nis_enable": int(args.dvc_c3_alpha_nis_enable),
                                     "dvc_c3_eta": args.dvc_c3_eta,
                                     "dvc_c3_rho": args.dvc_c3_rho,
+                                    "dvc_c3_alpha_min": args.dvc_c3_alpha_min,
                                     "dvc_c3_alpha_max": args.dvc_c3_alpha_max,
                                     "dvc_c3_zeta_enable": int(args.dvc_c3_zeta_enable),
                                     "dvc_c3_theta0": args.dvc_c3_theta0,
                                     "dvc_c3_theta1": args.dvc_c3_theta1,
                                     "dvc_c3_theta2": args.dvc_c3_theta2,
                                     "dvc_c3_theta3": args.dvc_c3_theta3,
+                                    "dvc_c3_zeta_min": args.dvc_c3_zeta_min,
+                                    "dvc_c3_zeta_span": args.dvc_c3_zeta_span,
                                     "dvc_c3_zeta_max": args.dvc_c3_zeta_max,
                                     "dvc_c3_gate_enable": int(args.dvc_c3_gate_enable),
                                     "dvc_c3_tau_r_high": args.dvc_c3_tau_r_high,
                                     "dvc_c3_tau_r_low": args.dvc_c3_tau_r_low,
                                     "dvc_c3_tau_v_low": args.dvc_c3_tau_v_low,
+                                    "dvc_c3_gate_hard_qr_min": args.dvc_c3_gate_hard_qr_min,
+                                    "dvc_c3_gate_soft_k_r": args.dvc_c3_gate_soft_k_r,
+                                    "dvc_c3_gate_soft_k_v": args.dvc_c3_gate_soft_k_v,
+                                    "dvc_c3_gate_soft_scale_max": args.dvc_c3_gate_soft_scale_max,
                                     "dvc_c3_visual_features_ref": args.dvc_c3_visual_features_ref,
                                     "dvc_c3_visual_stale_ref_s": args.dvc_c3_visual_stale_ref_s,
                                     "dvc_c3_visual_w_sparse": args.dvc_c3_visual_w_sparse,
@@ -633,17 +656,24 @@ def main():
     parser.add_argument("--dvc_c3_alpha_nis_enable", type=int, default=1)
     parser.add_argument("--dvc_c3_eta", type=float, default=0.03)
     parser.add_argument("--dvc_c3_rho", type=float, default=0.98)
+    parser.add_argument("--dvc_c3_alpha_min", type=float, default=0.90)
     parser.add_argument("--dvc_c3_alpha_max", type=float, default=8.0)
     parser.add_argument("--dvc_c3_zeta_enable", type=int, default=1)
     parser.add_argument("--dvc_c3_theta0", type=float, default=-1.2)
     parser.add_argument("--dvc_c3_theta1", type=float, default=0.6)
     parser.add_argument("--dvc_c3_theta2", type=float, default=0.4)
     parser.add_argument("--dvc_c3_theta3", type=float, default=0.8)
+    parser.add_argument("--dvc_c3_zeta_min", type=float, default=0.85)
+    parser.add_argument("--dvc_c3_zeta_span", type=float, default=0.25)
     parser.add_argument("--dvc_c3_zeta_max", type=float, default=3.0)
     parser.add_argument("--dvc_c3_gate_enable", type=int, default=1)
     parser.add_argument("--dvc_c3_tau_r_high", type=float, default=0.55)
     parser.add_argument("--dvc_c3_tau_r_low", type=float, default=0.35)
     parser.add_argument("--dvc_c3_tau_v_low", type=float, default=0.45)
+    parser.add_argument("--dvc_c3_gate_hard_qr_min", type=float, default=0.20)
+    parser.add_argument("--dvc_c3_gate_soft_k_r", type=float, default=1.0)
+    parser.add_argument("--dvc_c3_gate_soft_k_v", type=float, default=1.0)
+    parser.add_argument("--dvc_c3_gate_soft_scale_max", type=float, default=3.0)
     parser.add_argument("--dvc_c3_visual_features_ref", type=float, default=25.0)
     parser.add_argument("--dvc_c3_visual_stale_ref_s", type=float, default=0.20)
     parser.add_argument("--dvc_c3_visual_w_sparse", type=float, default=1.0)
@@ -720,12 +750,28 @@ def main():
         raise RuntimeError("dvc_c3_eta must be >= 0.")
     if not (0.0 < args.dvc_c3_rho < 1.0):
         raise RuntimeError("dvc_c3_rho must be in (0,1).")
+    if not (0.0 < args.dvc_c3_alpha_min <= 1.0):
+        raise RuntimeError("dvc_c3_alpha_min must be in (0,1].")
     if args.dvc_c3_alpha_max < 1.0:
         raise RuntimeError("dvc_c3_alpha_max must be >= 1.")
+    if args.dvc_c3_alpha_min > args.dvc_c3_alpha_max:
+        raise RuntimeError("dvc_c3_alpha_min must be <= dvc_c3_alpha_max.")
+    if not (0.0 < args.dvc_c3_zeta_min <= 1.0):
+        raise RuntimeError("dvc_c3_zeta_min must be in (0,1].")
+    if args.dvc_c3_zeta_span < 0.0:
+        raise RuntimeError("dvc_c3_zeta_span must be >= 0.")
     if args.dvc_c3_zeta_max < 1.0:
         raise RuntimeError("dvc_c3_zeta_max must be >= 1.")
+    if args.dvc_c3_zeta_min > args.dvc_c3_zeta_max:
+        raise RuntimeError("dvc_c3_zeta_min must be <= dvc_c3_zeta_max.")
     if args.dvc_c3_tau_r_high <= args.dvc_c3_tau_r_low or args.dvc_c3_tau_r_low < 0.0 or args.dvc_c3_tau_v_low < 0.0:
         raise RuntimeError("contrib3 gate thresholds must satisfy tau_r_high>tau_r_low>=0 and tau_v_low>=0.")
+    if args.dvc_c3_gate_hard_qr_min < 0.0 or args.dvc_c3_gate_hard_qr_min > args.dvc_c3_tau_r_low:
+        raise RuntimeError("dvc_c3_gate_hard_qr_min must be in [0, dvc_c3_tau_r_low].")
+    if args.dvc_c3_gate_soft_k_r < 0.0 or args.dvc_c3_gate_soft_k_v < 0.0:
+        raise RuntimeError("dvc_c3_gate_soft_k_r and dvc_c3_gate_soft_k_v must be >= 0.")
+    if args.dvc_c3_gate_soft_scale_max < 1.0:
+        raise RuntimeError("dvc_c3_gate_soft_scale_max must be >= 1.")
     if args.dvc_c3_visual_features_ref <= 0.0:
         raise RuntimeError("dvc_c3_visual_features_ref must be > 0.")
     if args.dvc_c3_visual_stale_ref_s <= 0.0:

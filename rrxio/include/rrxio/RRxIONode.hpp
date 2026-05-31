@@ -200,17 +200,24 @@ public:
     bool alpha_nis_enable  = true;
     double eta             = 0.03;
     double rho             = 0.98;
+    double alpha_min       = 0.90;
     double alpha_max       = 8.0;
     bool zeta_enable       = true;
     double theta0          = -1.2;
     double theta1          = 0.6;
     double theta2          = 0.4;
     double theta3          = 0.8;
+    double zeta_min        = 0.85;
+    double zeta_span       = 0.25;
     double zeta_max        = 3.0;
     bool gate_enable       = true;
     double tau_r_high      = 0.55;
     double tau_r_low       = 0.35;
     double tau_v_low       = 0.45;
+    double gate_hard_qr_min = 0.20;
+    double gate_soft_k_r    = 1.0;
+    double gate_soft_k_v    = 1.0;
+    double gate_soft_scale_max = 3.0;
     double visual_features_ref = 25.0;
     double visual_stale_ref_s  = 0.20;
     double visual_w_sparse     = 1.0;
@@ -249,6 +256,9 @@ public:
     int alpha_nis_sat = 0;
     int quality_gate_pass = 0;
     std::string quality_gate_reason = "not_applicable";
+    double quality_soft_scale = std::numeric_limits<double>::quiet_NaN();
+    int quality_hard_reject = 0;
+    std::string quality_gate_stage = "not_applicable";
     std::string radar_update_reject_reason = "none";
     int visual_feature_valid_count = 0;
     double visual_stale_s = std::numeric_limits<double>::quiet_NaN();
@@ -547,17 +557,27 @@ public:
         "dvc_rrxio/contrib3/alpha_nis_enable", contrib3_cfg_.alpha_nis_enable, contrib3_cfg_.alpha_nis_enable);
     nh_private_.param("dvc_rrxio/contrib3/eta", contrib3_cfg_.eta, contrib3_cfg_.eta);
     nh_private_.param("dvc_rrxio/contrib3/rho", contrib3_cfg_.rho, contrib3_cfg_.rho);
+    nh_private_.param("dvc_rrxio/contrib3/alpha_min", contrib3_cfg_.alpha_min, contrib3_cfg_.alpha_min);
     nh_private_.param("dvc_rrxio/contrib3/alpha_max", contrib3_cfg_.alpha_max, contrib3_cfg_.alpha_max);
     nh_private_.param("dvc_rrxio/contrib3/zeta_enable", contrib3_cfg_.zeta_enable, contrib3_cfg_.zeta_enable);
     nh_private_.param("dvc_rrxio/contrib3/theta0", contrib3_cfg_.theta0, contrib3_cfg_.theta0);
     nh_private_.param("dvc_rrxio/contrib3/theta1", contrib3_cfg_.theta1, contrib3_cfg_.theta1);
     nh_private_.param("dvc_rrxio/contrib3/theta2", contrib3_cfg_.theta2, contrib3_cfg_.theta2);
     nh_private_.param("dvc_rrxio/contrib3/theta3", contrib3_cfg_.theta3, contrib3_cfg_.theta3);
+    nh_private_.param("dvc_rrxio/contrib3/zeta_min", contrib3_cfg_.zeta_min, contrib3_cfg_.zeta_min);
+    nh_private_.param("dvc_rrxio/contrib3/zeta_span", contrib3_cfg_.zeta_span, contrib3_cfg_.zeta_span);
     nh_private_.param("dvc_rrxio/contrib3/zeta_max", contrib3_cfg_.zeta_max, contrib3_cfg_.zeta_max);
     nh_private_.param("dvc_rrxio/contrib3/gate_enable", contrib3_cfg_.gate_enable, contrib3_cfg_.gate_enable);
     nh_private_.param("dvc_rrxio/contrib3/tau_r_high", contrib3_cfg_.tau_r_high, contrib3_cfg_.tau_r_high);
     nh_private_.param("dvc_rrxio/contrib3/tau_r_low", contrib3_cfg_.tau_r_low, contrib3_cfg_.tau_r_low);
     nh_private_.param("dvc_rrxio/contrib3/tau_v_low", contrib3_cfg_.tau_v_low, contrib3_cfg_.tau_v_low);
+    nh_private_.param(
+        "dvc_rrxio/contrib3/gate_hard_qr_min", contrib3_cfg_.gate_hard_qr_min, contrib3_cfg_.gate_hard_qr_min);
+    nh_private_.param("dvc_rrxio/contrib3/gate_soft_k_r", contrib3_cfg_.gate_soft_k_r, contrib3_cfg_.gate_soft_k_r);
+    nh_private_.param("dvc_rrxio/contrib3/gate_soft_k_v", contrib3_cfg_.gate_soft_k_v, contrib3_cfg_.gate_soft_k_v);
+    nh_private_.param("dvc_rrxio/contrib3/gate_soft_scale_max",
+                      contrib3_cfg_.gate_soft_scale_max,
+                      contrib3_cfg_.gate_soft_scale_max);
     nh_private_.param("dvc_rrxio/contrib3/visual_features_ref",
                       contrib3_cfg_.visual_features_ref,
                       contrib3_cfg_.visual_features_ref);
@@ -665,15 +685,34 @@ public:
       throw std::runtime_error("dvc_rrxio/contrib3/eta must be finite and >= 0.");
     if (!(std::isfinite(contrib3_cfg_.rho) && contrib3_cfg_.rho > 0.0 && contrib3_cfg_.rho < 1.0))
       throw std::runtime_error("dvc_rrxio/contrib3/rho must be finite and in (0,1).");
+    if (!(std::isfinite(contrib3_cfg_.alpha_min) && contrib3_cfg_.alpha_min > 0.0 && contrib3_cfg_.alpha_min <= 1.0))
+      throw std::runtime_error("dvc_rrxio/contrib3/alpha_min must be finite and in (0,1].");
     if (!(std::isfinite(contrib3_cfg_.alpha_max) && contrib3_cfg_.alpha_max >= 1.0))
       throw std::runtime_error("dvc_rrxio/contrib3/alpha_max must be finite and >= 1.");
+    if (contrib3_cfg_.alpha_min > contrib3_cfg_.alpha_max)
+      throw std::runtime_error("dvc_rrxio/contrib3/alpha_min must be <= alpha_max.");
+    if (!(std::isfinite(contrib3_cfg_.zeta_min) && contrib3_cfg_.zeta_min > 0.0 && contrib3_cfg_.zeta_min <= 1.0))
+      throw std::runtime_error("dvc_rrxio/contrib3/zeta_min must be finite and in (0,1].");
+    if (!(std::isfinite(contrib3_cfg_.zeta_span) && contrib3_cfg_.zeta_span >= 0.0))
+      throw std::runtime_error("dvc_rrxio/contrib3/zeta_span must be finite and >= 0.");
     if (!(std::isfinite(contrib3_cfg_.zeta_max) && contrib3_cfg_.zeta_max >= 1.0))
       throw std::runtime_error("dvc_rrxio/contrib3/zeta_max must be finite and >= 1.");
+    if (contrib3_cfg_.zeta_min > contrib3_cfg_.zeta_max)
+      throw std::runtime_error("dvc_rrxio/contrib3/zeta_min must be <= zeta_max.");
     if (!(std::isfinite(contrib3_cfg_.tau_r_high) && std::isfinite(contrib3_cfg_.tau_r_low) &&
           std::isfinite(contrib3_cfg_.tau_v_low)))
       throw std::runtime_error("dvc_rrxio/contrib3/tau_r_high/tau_r_low/tau_v_low must be finite.");
     if (!(contrib3_cfg_.tau_r_high > contrib3_cfg_.tau_r_low && contrib3_cfg_.tau_r_low >= 0.0 && contrib3_cfg_.tau_v_low >= 0.0))
       throw std::runtime_error("dvc_rrxio/contrib3 gate thresholds must satisfy tau_r_high>tau_r_low>=0 and tau_v_low>=0.");
+    if (!(std::isfinite(contrib3_cfg_.gate_hard_qr_min) && contrib3_cfg_.gate_hard_qr_min >= 0.0 &&
+          contrib3_cfg_.gate_hard_qr_min <= contrib3_cfg_.tau_r_low))
+      throw std::runtime_error("dvc_rrxio/contrib3/gate_hard_qr_min must be finite and in [0,tau_r_low].");
+    if (!(std::isfinite(contrib3_cfg_.gate_soft_k_r) && contrib3_cfg_.gate_soft_k_r >= 0.0))
+      throw std::runtime_error("dvc_rrxio/contrib3/gate_soft_k_r must be finite and >= 0.");
+    if (!(std::isfinite(contrib3_cfg_.gate_soft_k_v) && contrib3_cfg_.gate_soft_k_v >= 0.0))
+      throw std::runtime_error("dvc_rrxio/contrib3/gate_soft_k_v must be finite and >= 0.");
+    if (!(std::isfinite(contrib3_cfg_.gate_soft_scale_max) && contrib3_cfg_.gate_soft_scale_max >= 1.0))
+      throw std::runtime_error("dvc_rrxio/contrib3/gate_soft_scale_max must be finite and >= 1.");
     if (!(std::isfinite(contrib3_cfg_.visual_features_ref) && contrib3_cfg_.visual_features_ref > 0.0))
       throw std::runtime_error("dvc_rrxio/contrib3/visual_features_ref must be finite and > 0.");
     if (!(std::isfinite(contrib3_cfg_.visual_stale_ref_s) && contrib3_cfg_.visual_stale_ref_s > 0.0))
@@ -989,12 +1028,12 @@ public:
       if (radar_update_committed == 1 && nis_valid == 1 && std::isfinite(nis_vel))
       {
         const double exponent = contrib3_cfg_.eta * (nis_vel / 3.0 - 1.0);
-        next = clampScalar(prev * std::exp(exponent), 1.0, contrib3_cfg_.alpha_max);
+        next = clampScalar(prev * std::exp(exponent), contrib3_cfg_.alpha_min, contrib3_cfg_.alpha_max);
       }
       else
       {
-        next = 1.0 + contrib3_cfg_.rho * (prev - 1.0);
-        next = clampScalar(next, 1.0, contrib3_cfg_.alpha_max);
+        next = contrib3_cfg_.alpha_min + contrib3_cfg_.rho * (prev - contrib3_cfg_.alpha_min);
+        next = clampScalar(next, contrib3_cfg_.alpha_min, contrib3_cfg_.alpha_max);
       }
     }
     else
@@ -1240,8 +1279,9 @@ public:
                         "lambda3_obs,obs_trace,obs_aniso,s1,s2,s3,trace_R_after_alpha,trace_R_after_sk,s_k_applied,"
                         "s_k_skip_reason,sk_gate_lambda3_pass,sk_gate_d_r_pass,sk_gate_ntargets_pass,"
                         "sk_gate_obs_trace_pass,sk_gate_obs_aniso_pass,d_v,q_r,q_v,zeta_rv,alpha_nis_prev,"
-                        "alpha_nis_new,alpha_nis_sat,quality_gate_pass,quality_gate_reason,radar_update_reject_reason,"
-                        "visual_feature_valid_count,visual_stale_s\n";
+                        "alpha_nis_new,alpha_nis_sat,quality_gate_pass,quality_gate_reason,quality_soft_scale,"
+                        "quality_hard_reject,quality_gate_stage,radar_update_reject_reason,visual_feature_valid_count,"
+                        "visual_stale_s\n";
     dvc_diag_stream_.flush();
     ROS_INFO_STREAM("[dvc_diag] Logging enabled: " << diag_file);
   }
@@ -1292,8 +1332,9 @@ public:
                      << cov_diag.d_v << "," << cov_diag.q_r << "," << cov_diag.q_v << "," << cov_diag.zeta_rv << ","
                      << cov_diag.alpha_nis_prev << "," << cov_diag.alpha_nis_new << "," << cov_diag.alpha_nis_sat << ","
                      << cov_diag.quality_gate_pass << "," << cov_diag.quality_gate_reason << ","
-                     << cov_diag.radar_update_reject_reason << "," << cov_diag.visual_feature_valid_count << ","
-                     << cov_diag.visual_stale_s
+                     << cov_diag.quality_soft_scale << "," << cov_diag.quality_hard_reject << ","
+                     << cov_diag.quality_gate_stage << "," << cov_diag.radar_update_reject_reason << ","
+                     << cov_diag.visual_feature_valid_count << "," << cov_diag.visual_stale_s
                      << "\n";
     dvc_diag_stream_.flush();
   }
@@ -2588,7 +2629,7 @@ public:
 
           double alpha_nis_prev = 1.0;
           if (contrib3_cfg_.alpha_nis_enable)
-            alpha_nis_prev = clampScalar(contrib3_alpha_nis_state_, 1.0, contrib3_cfg_.alpha_max);
+            alpha_nis_prev = clampScalar(contrib3_alpha_nis_state_, contrib3_cfg_.alpha_min, contrib3_cfg_.alpha_max);
           cov_diag.alpha_nis_prev = alpha_nis_prev;
 
           double zeta_rv = 1.0;
@@ -2596,30 +2637,68 @@ public:
           {
             const double zeta_raw = contrib3_cfg_.theta0 + contrib3_cfg_.theta1 * cov_diag.d_r +
                                     contrib3_cfg_.theta2 * cov_diag.d_v + contrib3_cfg_.theta3 * cov_diag.d_r * cov_diag.d_v;
-            zeta_rv = clampScalar(1.0 + softplusStable(zeta_raw), 1.0, contrib3_cfg_.zeta_max);
+            const double centered = std::tanh(zeta_raw);
+            zeta_rv = clampScalar(
+                1.0 + contrib3_cfg_.zeta_span * centered, contrib3_cfg_.zeta_min, contrib3_cfg_.zeta_max);
           }
           cov_diag.zeta_rv = zeta_rv;
 
+          cov_diag.quality_soft_scale = 1.0;
+          cov_diag.quality_hard_reject = 0;
           cov_diag.quality_gate_pass   = 1;
           cov_diag.quality_gate_reason = "gate_disabled";
+          cov_diag.quality_gate_stage  = "disabled";
           if (contrib3_cfg_.gate_enable)
           {
-            const bool high_ok  = std::isfinite(cov_diag.q_r) && cov_diag.q_r > contrib3_cfg_.tau_r_high;
-            const bool cross_ok = std::isfinite(cov_diag.q_r) && std::isfinite(cov_diag.q_v) &&
-                                  cov_diag.q_r > contrib3_cfg_.tau_r_low && cov_diag.q_v < contrib3_cfg_.tau_v_low;
-            quality_gate_pass = high_ok || cross_ok;
-            cov_diag.quality_gate_pass = quality_gate_pass ? 1 : 0;
-            if (quality_gate_pass)
-              cov_diag.quality_gate_reason = high_ok ? "pass_radar_high" : "pass_cross_modal";
-            else if (!std::isfinite(cov_diag.q_r))
+            if (!std::isfinite(cov_diag.q_r))
+            {
+              quality_gate_pass = false;
+              cov_diag.quality_gate_pass = 0;
+              cov_diag.quality_hard_reject = 1;
               cov_diag.quality_gate_reason = "reject_qr_invalid";
-            else if (cov_diag.q_r <= contrib3_cfg_.tau_r_low)
-              cov_diag.quality_gate_reason = "reject_qr_low";
+              cov_diag.quality_gate_stage = "hard_reject";
+            }
+            else if (cov_diag.q_r <= contrib3_cfg_.gate_hard_qr_min)
+            {
+              quality_gate_pass = false;
+              cov_diag.quality_gate_pass = 0;
+              cov_diag.quality_hard_reject = 1;
+              cov_diag.quality_gate_reason = "reject_qr_hard_low";
+              cov_diag.quality_gate_stage = "hard_reject";
+            }
             else
-              cov_diag.quality_gate_reason = "reject_qv_high";
+            {
+              const bool high_ok  = cov_diag.q_r > contrib3_cfg_.tau_r_high;
+              const bool cross_ok = std::isfinite(cov_diag.q_v) && cov_diag.q_r > contrib3_cfg_.tau_r_low &&
+                                    cov_diag.q_v < contrib3_cfg_.tau_v_low;
+              quality_gate_pass = true;
+              cov_diag.quality_gate_pass = 1;
+              if (high_ok)
+              {
+                cov_diag.quality_gate_reason = "pass_radar_high";
+                cov_diag.quality_gate_stage = "pass_high";
+              }
+              else if (cross_ok)
+              {
+                cov_diag.quality_gate_reason = "pass_cross_modal";
+                cov_diag.quality_gate_stage = "pass_cross_modal";
+              }
+              else
+              {
+                cov_diag.quality_gate_reason = "pass_soft_penalty";
+                cov_diag.quality_gate_stage = "soft_penalty";
+                const double qr_gap = std::max(0.0, contrib3_cfg_.tau_r_high - cov_diag.q_r);
+                const double qv_excess =
+                    std::isfinite(cov_diag.q_v) ? std::max(0.0, cov_diag.q_v - contrib3_cfg_.tau_v_low) : 1.0;
+                const double penalty_raw = contrib3_cfg_.gate_soft_k_r * qr_gap + contrib3_cfg_.gate_soft_k_v * qv_excess;
+                cov_diag.quality_soft_scale = 1.0 + clampScalar(
+                                                        penalty_raw, 0.0, contrib3_cfg_.gate_soft_scale_max - 1.0);
+              }
+            }
           }
 
-          const double scale = alpha_nis_prev * zeta_rv;
+          const double soft_scale = std::isfinite(cov_diag.quality_soft_scale) ? cov_diag.quality_soft_scale : 1.0;
+          const double scale = alpha_nis_prev * zeta_rv * soft_scale;
           cov_v_b_r_used *= scale;
           if (!regularizeCovariance(cov_v_b_r_used, radar_cov_recalib_cfg_.sigma_min2))
           {

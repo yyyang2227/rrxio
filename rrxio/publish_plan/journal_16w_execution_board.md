@@ -223,6 +223,35 @@ W10 阶段（`zeta_RV + 质量门控`）三档（固定 A0）：
 - 但在当前数据与公式下，strict Gate-W10 仍未通过；主失败项始终为 `focus_rpe_p95_improve<10%`，且开启质量门控会显著拉低 `committed_count`。
 - 按规则：W9-W10 必须保持 `BLOCKED`，不得标记 `DONE`，不进入 W11+。
 
+## 4.9 W9-W10 根因修复回合（2026-05-30，P0-P4 + R0-R3）
+实施内容（源码级）：
+- `RRxIONode`：Contrib3 由“硬拒绝优先”改为“硬拒绝兜底 + 软惩罚主导”，新增
+  `quality_soft_scale / quality_hard_reject / quality_gate_stage` 诊断链。
+- `alpha_NIS`：区间由单边改为对称可配置（`[alpha_min, alpha_max]`），遗忘支路回归 `alpha_min`。
+- `zeta_RV`：由单边 `1+softplus` 改为以 `1` 为中心的有界双向缩放（`tanh` 形式）。
+- `summarize_w10_results.py`：`quality_reject_count` 改为仅统计 `radar_update_reject_reason=="quality_gate"`；
+  新增 `quality_reject_rate / hard_reject_count / max_consecutive_quality_reject`。
+- `gate_w10_check.py`：新增 `health_pass` 与 `strict_pass` 双结果，`pass` 仍严格绑定 `strict_pass`。
+
+小批统一设置：
+- 规模：`4序列 × 2模态 × 3次`，`alpha_r_sk` vs `alpha_r_sk_nis_rv`，`scheduler_mode=event_stage2`。
+- 数据根：`/home/yyy/datasets/irs_rtvi_datasets_2021`。
+
+关键回合结果（strict Gate-W10）：
+| 回合 | 结果目录 | strict | 关键指标（focus） | 全局护栏（节选） |
+|---|---|---|---|---|
+| R0（默认） | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_r0` | FAIL | `rpe_p95_improve=-18.99%`, `nis_drop=-51.92%` | `ATE +14.43%`, `RPE +14.61%` |
+| R1（soft_hi） | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_r1_soft_hi` | FAIL | `rpe_p95_improve=-14.97%`, `nis_drop=-40.38%` | `ATE -1.35%`, `RPE +7.70%` |
+| R2（zeta_c3） | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_r2_zeta_c3` | FAIL | `rpe_p95_improve=-4.12%`, `nis_drop=+25.00%` | `ATE -0.74%`, `RPE +6.89%` |
+| R3（alpha_a0） | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_r3_alpha_a0` | FAIL | `rpe_p95_improve=-9.30%`, `nis_drop=+32.69%` | `ATE -1.47%`, `RPE +9.81%` |
+
+当前结论：
+- `health_gate` 全部通过（`radar_starved=0`、拒绝率可追踪、`committed_drop` 未超阈）。
+- `strict_gate` 仍失败，主失败项收敛为两条：
+  1) `focus_rpe_p95_improve < 10%`
+  2) `RPE degrade > 5%`
+- 阶段状态维持：`W9-W10 = BLOCKED`（不得标记 `DONE`）。
+
 ## 5. 目录与命名规范（统一结果资产）
 建议根目录：`<dataset_root>/results/dvc_rrxio_publish/`
 

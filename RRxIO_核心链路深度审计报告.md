@@ -271,6 +271,22 @@
   - `dvc_w10_R1_zeta_only_smallbatch`，`committed_drop=-1.16%`，`focus_nis_drop=+40.38%`，但 `rpe_degrade=14.45%`、`focus_rpe_p95_improve=-15.61%`。
 - 阶段结论：W9-W10 当前仍 `BLOCKED`，主失败项为 `focus_rpe_p95_improve<10%`；不进入 W11+。
 
+8.2 W9-W10 根因修复回合（2026-05-30）：
+- 已实施源码级修复：
+  - `alpha_NIS` 从单边区间改为对称区间 `[alpha_min, alpha_max]`，遗忘支路回归 `alpha_min`。
+  - `zeta_RV` 从单边 `1+softplus` 改为围绕 `1` 的有界双向缩放（`tanh` 形式）。
+  - 质量门控从“直接拒绝”重构为“硬拒绝兜底 + 软惩罚主导”，并新增 `quality_soft_scale/quality_hard_reject/quality_gate_stage` 诊断。
+  - `summarize_w10_results.py` 与 `gate_w10_check.py` 完成机制健康口径修复（`health_pass + strict_pass` 双判定）。
+- 小批回合结果（`4序列×2模态×3次`）：
+  - R0 默认：`focus_rpe_p95_improve=-18.99%`，`focus_nis_drop=-51.92%`（FAIL）
+  - R1（soft gate）：最佳 `soft_hi`，`focus_rpe_p95_improve=-14.97%`（FAIL）
+  - R2（zeta）：最佳 `zeta_c3`，`focus_nis_drop=+25.00%`，但 `focus_rpe_p95_improve=-4.12%`（FAIL）
+  - R3（alpha_NIS）：最佳 `alpha_a0`，`focus_nis_drop=+32.69%`，但 `focus_rpe_p95_improve=-9.30%`（FAIL）
+- 当前判定：
+  - `health_gate`: PASS（`radar_starved=0`，拒绝统计一致，提交计数无异常下降）。
+  - `strict_gate`: FAIL（主失败项稳定为 `focus_rpe_p95_improve<10%` 与 `RPE degrade>5%`）。
+  - 阶段状态：`W9-W10 = BLOCKED`（不得标记 `DONE`）。
+
 ---
 
 ## 9. 维护约定（后续代码改动时同步更新）
@@ -352,3 +368,8 @@
   - 小批：完成 A0/A1/A2（alpha_NIS）、C0/C1/C2（zeta+gate）与 R1（zeta-only）三轮验证。
   - 结果：`alpha_nis_sat_rate=0`、`radar_starved=0`，但 strict Gate-W10 均 `FAIL`；主失败项稳定为 `focus_rpe_p95_improve<10%`。
   - 状态：W9-W10 保持 `BLOCKED`，不得标记 `DONE`。
+- 2026-05-30（W9-W10 根因修复回合）：
+  - 代码：Contrib3 主链改为“硬拒绝兜底 + 软惩罚主导”；`alpha_NIS` 改为 `[alpha_min,alpha_max]`；`zeta_RV` 改为对称有界缩放；新增 `quality_soft_scale/quality_hard_reject/quality_gate_stage` 诊断列。
+  - 脚本：`summarize_w10_results.py` 修正 reject 统计口径并新增健康统计；`gate_w10_check.py` 新增 `health_pass/strict_pass` 双判定。
+  - 实验：完成 R0/R1/R2/R3 四轮小批收敛，最优为 `soft_hi + zeta_c3`，但 strict Gate-W10 仍未通过。
+  - 结论：健康门禁通过、严格门禁失败；W9-W10 状态继续保持 `BLOCKED`。

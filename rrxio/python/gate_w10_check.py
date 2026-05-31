@@ -126,6 +126,9 @@ def check_diag_file(path, require_full_columns):
                 "alpha_nis_sat",
                 "quality_gate_pass",
                 "quality_gate_reason",
+                "quality_soft_scale",
+                "quality_hard_reject",
+                "quality_gate_stage",
                 "radar_update_reject_reason",
                 "visual_feature_valid_count",
                 "visual_stale_s",
@@ -178,6 +181,14 @@ def summarize_mode(rows):
     committed = sum(i64(r.get("radar_update_committed_count", "0")) for r in rows)
     alpha_sat = sum(i64(r.get("alpha_nis_sat_count", "0")) for r in rows)
     alpha_total = sum(i64(r.get("alpha_nis_total_count", "0")) for r in rows)
+    quality_reject = sum(i64(r.get("quality_reject_count", "0")) for r in rows)
+    hard_reject = sum(i64(r.get("hard_reject_count", "0")) for r in rows)
+    diag_rows = sum(i64(r.get("diag_rows", "0")) for r in rows)
+    max_consecutive_quality_reject = 0
+    for r in rows:
+        max_consecutive_quality_reject = max(
+            max_consecutive_quality_reject, i64(r.get("quality_reject_max_consecutive", "0"))
+        )
     return {
         "n": len(rows),
         "ate": ate,
@@ -191,6 +202,12 @@ def summarize_mode(rows):
         "alpha_sat": alpha_sat,
         "alpha_total": alpha_total,
         "alpha_sat_rate": safe_rate(alpha_sat, alpha_total),
+        "quality_reject_total": quality_reject,
+        "hard_reject_total": hard_reject,
+        "diag_rows_total": diag_rows,
+        "quality_reject_rate": safe_rate(quality_reject, diag_rows),
+        "hard_reject_rate": safe_rate(hard_reject, diag_rows),
+        "max_consecutive_quality_reject": max_consecutive_quality_reject,
     }
 
 
@@ -217,6 +234,11 @@ def main():
     parser.add_argument("--max_repeat_rpe_cv", type=float, default=0.10)
     parser.add_argument("--max_repeat_update_rel_range", type=float, default=0.05)
     parser.add_argument("--max_repeat_reject_rel_range", type=float, default=0.10)
+    parser.add_argument("--health_gate_enable", type=int, default=1)
+    parser.add_argument("--strict_gate_enable", type=int, default=1)
+    parser.add_argument("--max_quality_reject_rate_focus", type=float, default=0.08)
+    parser.add_argument("--max_hard_reject_rate_focus", type=float, default=0.03)
+    parser.add_argument("--max_consecutive_quality_reject_focus", type=int, default=50)
     args = parser.parse_args()
 
     manifest = args.manifest if args.manifest else os.path.join(args.results_root, "run_manifest.csv")
@@ -246,13 +268,24 @@ def main():
             "max_repeat_rpe_cv": args.max_repeat_rpe_cv,
             "max_repeat_update_rel_range": args.max_repeat_update_rel_range,
             "max_repeat_reject_rel_range": args.max_repeat_reject_rel_range,
+            "health_gate_enable": int(args.health_gate_enable) != 0,
+            "strict_gate_enable": int(args.strict_gate_enable) != 0,
+            "max_quality_reject_rate_focus": args.max_quality_reject_rate_focus,
+            "max_hard_reject_rate_focus": args.max_hard_reject_rate_focus,
+            "max_consecutive_quality_reject_focus": args.max_consecutive_quality_reject_focus,
         },
         "checks": {},
+        "health_failures": [],
+        "strict_failures": [],
+        "health_pass": False,
+        "strict_pass": False,
         "failures": [],
         "pass": False,
     }
 
     failures = []
+    health_gate_enable = int(args.health_gate_enable) != 0
+    strict_gate_enable = int(args.strict_gate_enable) != 0
 
     if not os.path.isfile(manifest):
         append_fail(failures, "manifest not found: %s" % manifest)
@@ -312,16 +345,17 @@ def main():
         "committed_drop": committed_drop,
     }
 
-    if (not finite(ate_degrade)) or ate_degrade > args.max_ate_degrade:
-        append_fail(failures, "ATE degrade failed: got=%s need <= %.6f" % (str(ate_degrade), args.max_ate_degrade))
-    if (not finite(rpe_degrade)) or rpe_degrade > args.max_rpe_degrade:
-        append_fail(failures, "RPE degrade failed: got=%s need <= %.6f" % (str(rpe_degrade), args.max_rpe_degrade))
-    if (not finite(runtime_increase)) or runtime_increase > args.max_runtime_increase:
-        append_fail(failures, "runtime increase failed: got=%s need <= %.6f" % (str(runtime_increase), args.max_runtime_increase))
-    if (not finite(nis_abs_inc_pp)) or nis_abs_inc_pp > args.max_nis_abs_increase_pp:
-        append_fail(failures, "NIS absolute increase failed: got=%s need <= %.6f pp" % (str(nis_abs_inc_pp), args.max_nis_abs_increase_pp))
-    if (not finite(committed_drop)) or committed_drop > args.max_committed_drop:
-        append_fail(failures, "committed drop failed: got=%s need <= %.6f" % (str(committed_drop), args.max_committed_drop))
+    if strict_gate_enable:
+        if (not finite(ate_degrade)) or ate_degrade > args.max_ate_degrade:
+            append_fail(failures, "ATE degrade failed: got=%s need <= %.6f" % (str(ate_degrade), args.max_ate_degrade))
+        if (not finite(rpe_degrade)) or rpe_degrade > args.max_rpe_degrade:
+            append_fail(failures, "RPE degrade failed: got=%s need <= %.6f" % (str(rpe_degrade), args.max_rpe_degrade))
+        if (not finite(runtime_increase)) or runtime_increase > args.max_runtime_increase:
+            append_fail(failures, "runtime increase failed: got=%s need <= %.6f" % (str(runtime_increase), args.max_runtime_increase))
+        if (not finite(nis_abs_inc_pp)) or nis_abs_inc_pp > args.max_nis_abs_increase_pp:
+            append_fail(failures, "NIS absolute increase failed: got=%s need <= %.6f pp" % (str(nis_abs_inc_pp), args.max_nis_abs_increase_pp))
+        if (not finite(committed_drop)) or committed_drop > args.max_committed_drop:
+            append_fail(failures, "committed drop failed: got=%s need <= %.6f" % (str(committed_drop), args.max_committed_drop))
 
     focus_set = parse_name_set(args.focus_datasets)
     base_focus = [r for r in base_rows if text(r.get("dataset", "")) in focus_set]
@@ -339,23 +373,63 @@ def main():
         "rpe_p95_improve_focus": rpe_p95_improve_focus,
         "nis_relative_drop_focus": nis_relative_drop_focus,
         "alpha_nis_sat_rate_focus": alpha_nis_sat_rate_focus,
+        "quality_reject_rate_focus": focus_full_agg["quality_reject_rate"],
+        "hard_reject_rate_focus": focus_full_agg["hard_reject_rate"],
+        "max_consecutive_quality_reject_focus": focus_full_agg["max_consecutive_quality_reject"],
     }
 
-    if (not finite(rpe_p95_improve_focus)) or rpe_p95_improve_focus < args.min_rpe_p95_improve_focus:
-        append_fail(
-            failures,
-            "focus rpe_p95 improve failed: got=%s need >= %.6f" % (str(rpe_p95_improve_focus), args.min_rpe_p95_improve_focus),
-        )
-    if (not finite(nis_relative_drop_focus)) or nis_relative_drop_focus < args.min_nis_relative_drop_focus:
-        append_fail(
-            failures,
-            "focus NIS relative drop failed: got=%s need >= %.6f" % (str(nis_relative_drop_focus), args.min_nis_relative_drop_focus),
-        )
-    if (not finite(alpha_nis_sat_rate_focus)) or alpha_nis_sat_rate_focus > args.max_alpha_nis_sat_rate_focus:
-        append_fail(
-            failures,
-            "focus alpha_nis saturation failed: got=%s need <= %.6f" % (str(alpha_nis_sat_rate_focus), args.max_alpha_nis_sat_rate_focus),
-        )
+    health_failures = []
+    if health_gate_enable:
+        if (not finite(committed_drop)) or committed_drop > args.max_committed_drop:
+            append_fail(
+                health_failures,
+                "health committed drop failed: got=%s need <= %.6f" % (str(committed_drop), args.max_committed_drop),
+            )
+        if (not finite(focus_full_agg["quality_reject_rate"])) or (
+            focus_full_agg["quality_reject_rate"] > args.max_quality_reject_rate_focus
+        ):
+            append_fail(
+                health_failures,
+                "health quality reject rate failed: got=%s need <= %.6f"
+                % (str(focus_full_agg["quality_reject_rate"]), args.max_quality_reject_rate_focus),
+            )
+        if (not finite(focus_full_agg["hard_reject_rate"])) or (
+            focus_full_agg["hard_reject_rate"] > args.max_hard_reject_rate_focus
+        ):
+            append_fail(
+                health_failures,
+                "health hard reject rate failed: got=%s need <= %.6f"
+                % (str(focus_full_agg["hard_reject_rate"]), args.max_hard_reject_rate_focus),
+            )
+        if focus_full_agg["max_consecutive_quality_reject"] > args.max_consecutive_quality_reject_focus:
+            append_fail(
+                health_failures,
+                "health max consecutive quality reject failed: got=%d need <= %d"
+                % (
+                    focus_full_agg["max_consecutive_quality_reject"],
+                    args.max_consecutive_quality_reject_focus,
+                ),
+            )
+
+    if strict_gate_enable:
+        if (not finite(rpe_p95_improve_focus)) or rpe_p95_improve_focus < args.min_rpe_p95_improve_focus:
+            append_fail(
+                failures,
+                "focus rpe_p95 improve failed: got=%s need >= %.6f"
+                % (str(rpe_p95_improve_focus), args.min_rpe_p95_improve_focus),
+            )
+        if (not finite(nis_relative_drop_focus)) or nis_relative_drop_focus < args.min_nis_relative_drop_focus:
+            append_fail(
+                failures,
+                "focus NIS relative drop failed: got=%s need >= %.6f"
+                % (str(nis_relative_drop_focus), args.min_nis_relative_drop_focus),
+            )
+        if (not finite(alpha_nis_sat_rate_focus)) or alpha_nis_sat_rate_focus > args.max_alpha_nis_sat_rate_focus:
+            append_fail(
+                failures,
+                "focus alpha_nis saturation failed: got=%s need <= %.6f"
+                % (str(alpha_nis_sat_rate_focus), args.max_alpha_nis_sat_rate_focus),
+            )
 
     diag_checks = []
     total_starved = 0
@@ -376,7 +450,10 @@ def main():
     report["checks"]["diag_files"] = diag_checks
     report["checks"]["total_radar_starved"] = total_starved
     if total_starved != 0:
-        append_fail(failures, "radar_starved must be 0, got=%d" % total_starved)
+        if health_gate_enable:
+            append_fail(health_failures, "health radar_starved must be 0, got=%d" % total_starved)
+        if strict_gate_enable:
+            append_fail(failures, "radar_starved must be 0, got=%d" % total_starved)
 
     repeat_groups = defaultdict(list)
     for row in full_rows:
@@ -386,7 +463,8 @@ def main():
     repeat_report = []
     for key, group in sorted(repeat_groups.items()):
         if len(group) < args.repeat_min_runs:
-            append_fail(failures, "repeatability runs too few for %s: %d < %d" % (key, len(group), args.repeat_min_runs))
+            if strict_gate_enable:
+                append_fail(failures, "repeatability runs too few for %s: %d < %d" % (key, len(group), args.repeat_min_runs))
             continue
 
         ate_vals = [f64(r.get("ate_rmse", "nan")) for r in group if finite(r.get("ate_rmse", "nan"))]
@@ -410,19 +488,23 @@ def main():
             }
         )
 
-        if finite(ate_cv) and ate_cv > args.max_repeat_ate_cv:
+        if strict_gate_enable and finite(ate_cv) and ate_cv > args.max_repeat_ate_cv:
             append_fail(failures, "repeatability ate cv too high for %s: %.6f > %.6f" % (key, ate_cv, args.max_repeat_ate_cv))
-        if finite(rpe_cv) and rpe_cv > args.max_repeat_rpe_cv:
+        if strict_gate_enable and finite(rpe_cv) and rpe_cv > args.max_repeat_rpe_cv:
             append_fail(failures, "repeatability rpe cv too high for %s: %.6f > %.6f" % (key, rpe_cv, args.max_repeat_rpe_cv))
-        if finite(upd_rr) and upd_rr > args.max_repeat_update_rel_range:
+        if strict_gate_enable and finite(upd_rr) and upd_rr > args.max_repeat_update_rel_range:
             append_fail(failures, "repeatability update rel-range too high for %s: %.6f > %.6f" % (key, upd_rr, args.max_repeat_update_rel_range))
-        if finite(rej_rr) and rej_rr > args.max_repeat_reject_rel_range:
+        if strict_gate_enable and finite(rej_rr) and rej_rr > args.max_repeat_reject_rel_range:
             append_fail(failures, "repeatability reject rel-range too high for %s: %.6f > %.6f" % (key, rej_rr, args.max_repeat_reject_rel_range))
 
     report["checks"]["repeatability"] = repeat_report
 
+    report["health_failures"] = health_failures
+    report["strict_failures"] = failures
+    report["health_pass"] = (not health_gate_enable) or len(health_failures) == 0
+    report["strict_pass"] = (not strict_gate_enable) or len(failures) == 0
     report["failures"] = failures
-    report["pass"] = len(failures) == 0
+    report["pass"] = report["strict_pass"]
 
     with open(report_json, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, ensure_ascii=False)

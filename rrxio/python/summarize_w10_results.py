@@ -150,6 +150,10 @@ def read_diag_stats(diag_file):
         "alpha_nis_sat_count": 0,
         "alpha_nis_total_count": 0,
         "quality_reject_count": 0,
+        "quality_reject_max_consecutive": 0,
+        "hard_reject_count": 0,
+        "quality_reject_rate": float("nan"),
+        "hard_reject_rate": float("nan"),
         "use_radar_update_count": 0,
     }
     if not os.path.isfile(diag_file):
@@ -157,6 +161,7 @@ def read_diag_stats(diag_file):
 
     with open(diag_file, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
+        quality_reject_consecutive = 0
         for row in reader:
             stats["rows"] += 1
             if row.get("nis_valid", "").strip() == "1":
@@ -167,13 +172,23 @@ def read_diag_stats(diag_file):
                 stats["committed_count"] += 1
             if row.get("use_radar_update", "").strip() == "1":
                 stats["use_radar_update_count"] += 1
-            if row.get("quality_gate_pass", "").strip() == "0":
+            is_quality_reject = row.get("radar_update_reject_reason", "").strip() == "quality_gate"
+            if is_quality_reject:
                 stats["quality_reject_count"] += 1
+                quality_reject_consecutive += 1
+                if quality_reject_consecutive > stats["quality_reject_max_consecutive"]:
+                    stats["quality_reject_max_consecutive"] = quality_reject_consecutive
+            else:
+                quality_reject_consecutive = 0
+            if row.get("quality_hard_reject", "").strip() == "1":
+                stats["hard_reject_count"] += 1
             alpha_new = row.get("alpha_nis_new", "")
             if finite(alpha_new):
                 stats["alpha_nis_total_count"] += 1
                 if row.get("alpha_nis_sat", "").strip() == "1":
                     stats["alpha_nis_sat_count"] += 1
+    stats["quality_reject_rate"] = safe_rate(stats["quality_reject_count"], stats["rows"])
+    stats["hard_reject_rate"] = safe_rate(stats["hard_reject_count"], stats["rows"])
     return stats
 
 
@@ -204,6 +219,9 @@ def summarize_group(rows):
     alpha_total = sum(r["alpha_nis_total_count"] for r in rows)
     starved_total = sum(r["radar_starved_count"] for r in rows)
     quality_reject_total = sum(r["quality_reject_count"] for r in rows)
+    hard_reject_total = sum(r["hard_reject_count"] for r in rows)
+    diag_rows_total = sum(r["diag_rows"] for r in rows)
+    max_consecutive_quality_reject = max([r["quality_reject_max_consecutive"] for r in rows], default=0)
 
     out["nis_valid_total"] = nis_valid_total
     out["nis_exceed_total"] = nis_exceed_total
@@ -214,6 +232,11 @@ def summarize_group(rows):
     out["alpha_nis_sat_rate"] = safe_rate(alpha_sat_total, alpha_total)
     out["radar_starved_total"] = starved_total
     out["quality_reject_total"] = quality_reject_total
+    out["hard_reject_total"] = hard_reject_total
+    out["diag_rows_total"] = diag_rows_total
+    out["quality_reject_rate"] = safe_rate(quality_reject_total, diag_rows_total)
+    out["hard_reject_rate"] = safe_rate(hard_reject_total, diag_rows_total)
+    out["max_consecutive_quality_reject"] = max_consecutive_quality_reject
     return out
 
 
@@ -282,6 +305,10 @@ def main():
                 "alpha_nis_sat_count": diag_stats["alpha_nis_sat_count"],
                 "alpha_nis_total_count": diag_stats["alpha_nis_total_count"],
                 "quality_reject_count": diag_stats["quality_reject_count"],
+                "quality_reject_max_consecutive": diag_stats["quality_reject_max_consecutive"],
+                "hard_reject_count": diag_stats["hard_reject_count"],
+                "quality_reject_rate": diag_stats["quality_reject_rate"],
+                "hard_reject_rate": diag_stats["hard_reject_rate"],
                 "use_radar_update_count": diag_stats["use_radar_update_count"],
                 "radar_starved_count": starved_count,
                 "diag_file": diag_file,
@@ -308,6 +335,10 @@ def main():
         "alpha_nis_sat_count",
         "alpha_nis_total_count",
         "quality_reject_count",
+        "quality_reject_max_consecutive",
+        "hard_reject_count",
+        "quality_reject_rate",
+        "hard_reject_rate",
         "use_radar_update_count",
         "radar_starved_count",
         "diag_file",
@@ -340,6 +371,10 @@ def main():
         "committed_total_focus",
         "starved_total_focus",
         "quality_reject_total_focus",
+        "hard_reject_total_focus",
+        "quality_reject_rate_focus",
+        "hard_reject_rate_focus",
+        "max_consecutive_quality_reject_focus",
     ]
     focus_rows = []
     for mode in sorted(by_mode.keys()):
@@ -358,6 +393,10 @@ def main():
                     "committed_total_focus": 0,
                     "starved_total_focus": 0,
                     "quality_reject_total_focus": 0,
+                    "hard_reject_total_focus": 0,
+                    "quality_reject_rate_focus": float("nan"),
+                    "hard_reject_rate_focus": float("nan"),
+                    "max_consecutive_quality_reject_focus": 0,
                 }
             )
             continue
@@ -375,6 +414,10 @@ def main():
                 "committed_total_focus": summary_focus["radar_update_committed_total"],
                 "starved_total_focus": summary_focus["radar_starved_total"],
                 "quality_reject_total_focus": summary_focus["quality_reject_total"],
+                "hard_reject_total_focus": summary_focus["hard_reject_total"],
+                "quality_reject_rate_focus": summary_focus["quality_reject_rate"],
+                "hard_reject_rate_focus": summary_focus["hard_reject_rate"],
+                "max_consecutive_quality_reject_focus": summary_focus["max_consecutive_quality_reject"],
             }
         )
 
@@ -387,12 +430,12 @@ def main():
     with open(output_summary, "w", encoding="utf-8") as f:
         f.write("# W10 Summary\n\n")
         f.write("## Overall by cov_mode\n\n")
-        f.write("| cov_mode | n_runs | ate_median | rpe_median | rpe_p95_median | runtime_median_s | nis_exceed_rate | alpha_nis_sat_rate | committed_total | starved_total | quality_reject_total |\n")
-        f.write("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
+        f.write("| cov_mode | n_runs | ate_median | rpe_median | rpe_p95_median | runtime_median_s | nis_exceed_rate | alpha_nis_sat_rate | committed_total | starved_total | quality_reject_total | hard_reject_total | quality_reject_rate | max_consecutive_quality_reject |\n")
+        f.write("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
         for mode in sorted(by_mode.keys()):
             summary = summarize_group(by_mode[mode])
             f.write(
-                "| {mode} | {n_runs} | {ate:.6f} | {rpe:.6f} | {rpe95:.6f} | {rt:.6f} | {nis:.6f} | {sat:.6f} | {committed} | {starved} | {reject} |\n".format(
+                "| {mode} | {n_runs} | {ate:.6f} | {rpe:.6f} | {rpe95:.6f} | {rt:.6f} | {nis:.6f} | {sat:.6f} | {committed} | {starved} | {reject} | {hard_reject} | {reject_rate:.6f} | {max_reject} |\n".format(
                     mode=mode,
                     n_runs=summary["n_runs"],
                     ate=summary["ate_median"],
@@ -404,16 +447,19 @@ def main():
                     committed=summary["radar_update_committed_total"],
                     starved=summary["radar_starved_total"],
                     reject=summary["quality_reject_total"],
+                    hard_reject=summary["hard_reject_total"],
+                    reject_rate=summary["quality_reject_rate"],
+                    max_reject=summary["max_consecutive_quality_reject"],
                 )
             )
 
         f.write("\n## Focus by cov_mode\n\n")
         f.write("Focus datasets: %s\n\n" % ",".join(sorted(focus_datasets)))
-        f.write("| cov_mode | n_runs_focus | ate_median_focus | rpe_median_focus | rpe_p95_median_focus | runtime_median_focus_s | nis_exceed_rate_focus | alpha_nis_sat_rate_focus | committed_total_focus | starved_total_focus | quality_reject_total_focus |\n")
-        f.write("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
+        f.write("| cov_mode | n_runs_focus | ate_median_focus | rpe_median_focus | rpe_p95_median_focus | runtime_median_focus_s | nis_exceed_rate_focus | alpha_nis_sat_rate_focus | committed_total_focus | starved_total_focus | quality_reject_total_focus | hard_reject_total_focus | quality_reject_rate_focus | max_consecutive_quality_reject_focus |\n")
+        f.write("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
         for r in focus_rows:
             f.write(
-                "| {cov_mode} | {n_runs_focus} | {ate_median_focus:.6f} | {rpe_median_focus:.6f} | {rpe_p95_median_focus:.6f} | {runtime_median_focus_s:.6f} | {nis_exceed_rate_focus:.6f} | {alpha_nis_sat_rate_focus:.6f} | {committed_total_focus} | {starved_total_focus} | {quality_reject_total_focus} |\n".format(
+                "| {cov_mode} | {n_runs_focus} | {ate_median_focus:.6f} | {rpe_median_focus:.6f} | {rpe_p95_median_focus:.6f} | {runtime_median_focus_s:.6f} | {nis_exceed_rate_focus:.6f} | {alpha_nis_sat_rate_focus:.6f} | {committed_total_focus} | {starved_total_focus} | {quality_reject_total_focus} | {hard_reject_total_focus} | {quality_reject_rate_focus:.6f} | {max_consecutive_quality_reject_focus} |\n".format(
                     **r
                 )
             )

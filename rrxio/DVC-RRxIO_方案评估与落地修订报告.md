@@ -375,6 +375,35 @@
   - strict Gate-W10 主失败项稳定为 `focus_rpe_p95_improve<10%`，且启用质量门控会显著拉低雷达提交计数。
   - 按规则保持 `BLOCKED`，不得标记 `DONE`，不进入 W11+。
 
+### 5.12 W9-W10 根因修复回合（2026-05-30，P0-P4 + R0-R3）
+- 状态：`BLOCKED`（strict Gate-W10 仍未通过）
+- 本轮源码级修复（非补丁绕过）：
+  - `RRxIONode`：
+    - `alpha_NIS` 改为对称区间 `[alpha_min, alpha_max]`，遗忘支路回归 `alpha_min`。
+    - `zeta_RV` 改为围绕 `1` 的双向有界缩放（`tanh` 形式）。
+    - 质量门控改为“硬拒绝兜底 + 软惩罚主导”，新增 `quality_soft_scale`。
+  - `summarize_w10_results.py`：
+    - `quality_reject_count` 口径改为仅计 `radar_update_reject_reason=="quality_gate"`。
+    - 新增 `quality_reject_rate / hard_reject_count / max_consecutive_quality_reject`。
+  - `gate_w10_check.py`：
+    - 新增 `health_pass` 与 `strict_pass`，`pass` 保持严格绑定 `strict_pass`。
+- 小批实验矩阵：`4序列×2模态×3次`，`alpha_r_sk` vs `alpha_r_sk_nis_rv`，均启用 `event_stage2`。
+- 回合结果汇总：
+  - R0 默认：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_r0`
+    - `focus_rpe_p95_improve=-18.99%`，`focus_nis_drop=-51.92%`，`ATE +14.43%`，`RPE +14.61%`（FAIL）
+  - R1（soft gate 扫描）最佳 `soft_hi`：
+    - `focus_rpe_p95_improve=-14.97%`，`focus_nis_drop=-40.38%`，`RPE +7.70%`（FAIL）
+  - R2（zeta 扫描）最佳 `zeta_c3`：
+    - `focus_rpe_p95_improve=-4.12%`，`focus_nis_drop=+25.00%`，`RPE +6.89%`（FAIL）
+  - R3（alpha_NIS 扫描）最佳 `alpha_a0`：
+    - `focus_rpe_p95_improve=-9.30%`，`focus_nis_drop=+32.69%`，`RPE +9.81%`（FAIL）
+- 结论：
+  - `health_gate` 全部通过：`radar_starved=0`，拒绝率与连续拒绝段可追踪，`committed_drop` 不超阈。
+  - `strict_gate` 主失败项收敛为两条：
+    1) `focus_rpe_p95_improve < 10%`
+    2) `RPE degrade > 5%`
+  - 当前最优候选为 `soft_hi + zeta_c3`，但仍不满足 strict；W9-W10 保持 `BLOCKED`。
+
 ### 《边界警示》
 - 以上修正优先级遵循“先消除参数/调度不一致，再引入新统计模型”。
 - 断点 #1/#2 与 W1-W4 门禁均已完成；后续进入 W5+ 时仍需保持“单创新点分阶段消融”。
@@ -618,3 +647,19 @@ addUpdateMeas<2>(v, t_meas);
 - 结论：
   - W9-W10 代码和诊断链均生效，`alpha_nis_sat_rate=0`、`radar_starved=0`。
   - 但在当前公式与数据下，strict Gate-W10 主失败项稳定为 `focus_rpe_p95_improve<10%`，阶段状态保持 `BLOCKED`，不得标记 `DONE`。
+
+### 2026-05-30（v2.0）
+- 执行 W9-W10 根因修复（P0-P4）：
+  - `RRxIONode`：Contrib3 机制重构为“硬拒绝兜底 + 软惩罚主导”；`alpha_NIS` 改为 `[alpha_min,alpha_max]`；`zeta_RV` 改为以 `1` 为中心的双向有界缩放。
+  - `summarize_w10_results.py`：修正 `quality_reject_count` 统计口径；新增机制健康统计列。
+  - `gate_w10_check.py`：新增 `health_pass/strict_pass` 双判定并保留 strict 作为最终 `pass`。
+  - `evaluate_iros_datasets.py` 与统一 YAML：新增 `alpha_min/zeta_min/zeta_span/gate_hard_qr_min/gate_soft_k_*` 参数透传与 manifest 追踪。
+- 完整小批收敛回合：
+  - R0：默认参数（FAIL）
+  - R1：soft gate 三档（FAIL，最佳 `soft_hi`）
+  - R2：zeta 三档（FAIL，最佳 `zeta_c3`）
+  - R3：alpha_NIS 三档（FAIL，最佳 `alpha_a0`）
+- 关键事实：
+  - `health_gate` 全通过（`radar_starved=0`，拒绝率/硬拒绝可追踪）。
+  - `strict_gate` 仍失败，主失败项收敛为 `focus_rpe_p95_improve<10%` 与 `RPE degrade>5%`。
+  - 阶段状态保持 `W9-W10=BLOCKED`，不进入 W11+。
