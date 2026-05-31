@@ -1611,3 +1611,29 @@ $$
 - 后续最小研究方向：
   - 不继续盲扫全局参数；优先逐帧关联 `zeta_rv/quality_soft_scale/alpha_nis_new` 与 RPE95 spike，定位长尾段是否来自雷达约束相位、视觉残差质量代理失真或局部外参/时间同步敏感性。
   - 投稿对比必须以原始 W1 输出为主基线；W8/W10 中间结果只作为消融链路。
+
+---
+
+## 附录C：W10 Visual-Only 原始基线闭环复验补充（2026-05-31）
+
+本轮以原始 W1 visual 输出为主基线，执行 `V15_cross_soft_only_9x3` 全量验证。
+
+代码修正：
+- 稀疏低退化回退不再仅依赖 `n_targets` 与 `d_r`，新增当前帧候选 NIS 一致性约束。
+- 质量软惩罚默认改为 cross-only，避免视觉正常时无差别弱化雷达约束。
+- Gate 修正 legacy 调度诊断口径，避免把无 scheduler worker 的 legacy 运行误判为缺失 `radar_starved` 诊断。
+
+全量结果：
+- 结果目录：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_visual_v15_cross_soft_only_9x3`
+- `health_pass=true`，`strict_pass=false`
+- 中位 runtime 优于原始 W1 约 `4.86%`，committed drop `1.47%`，说明运行健康与更新提交没有结构性异常。
+- 但 ATE 中位数恶化 `16.41%`，RPE95 主效应为 `-1.45%`，未达到 `+10%` 目标。
+
+方法论修正：
+- NIS 作为一致性指标必须接近合理区间，而不是越低越好。本轮暴露出多数组 NIS 过低、`mocap_difficult` 过高的分裂现象。
+- 仅做后端协方差膨胀/缩放无法稳定提升定位精度；下一步应回到 REVE 速度测量本体和雷达-机体系时空标定一致性。
+
+当前论文路径影响：
+- `alpha_R` 仍是已通过 W6 的可靠贡献。
+- `S_k` 与 Contribution-3 在当前公开 visual 九序列上不能作为“已达成主效应”的结论，只能作为诊断性机制或失败分析材料。
+- 后续若要形成可发表主线，必须新增“雷达速度观测校准/偏置建模/时序一致性”层面的实质改进，而不是继续调后端缩放参数。

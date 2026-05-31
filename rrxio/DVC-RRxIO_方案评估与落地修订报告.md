@@ -726,3 +726,21 @@ addUpdateMeas<2>(v, t_meas);
   - 配置：删除废弃 top-level scheduler 回压参数，统一由 `dvc_rrxio/scheduler/*` 读取。
   - 实验：V4 相对原始 W1 visual 基线改善 ATE/RPE 与总体 runtime，但 RPE95 变差 `2.32%`；分组 NIS 出现“多数偏保守、`mocap_difficult` 偏过自信”的不一致。
   - 结论：W10 继续 `BLOCKED`；下一轮以分组 NIS band、RPE95 spike 对齐和局部 runtime 长尾为主，不再用“NIS越低越好”的目标函数。
+
+### 2026-05-31（v2.3）
+- 执行 W10 visual-only “原始 W1 基线闭环”修正与验证：
+  - `RRxIONode`：稀疏低退化 base 协方差回退新增当前帧 `candidate_nis` 约束，避免 `mocap_difficult` 中“几何看似低退化但创新很大”的帧被误判为安全帧。
+  - `evaluate_iros_datasets.py` 与统一 YAML：新增并固化 `sparse_low_degradation_candidate_nis_max=4.0`；`gate_soft_k_r=0.0`，使软惩罚默认只在视觉/雷达双退化时发挥作用。
+  - `gate_w10_check.py`：修正 legacy 调度模式下 `dvc_sched_diag` 缺失被误判为失败的问题。
+- 实验结论：
+  - V15 全量 visual-only：`9序列×visual×3次×2模式` 完成。
+  - 结果目录：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_visual_v15_cross_soft_only_9x3`
+  - Gate：`health_pass=true`，`strict_pass=false`。
+  - 真实失败项：`ATE degrade=+16.41%`、`RPE95 improve=-1.45%`、`indoor_floor/visual RPE95 degrade=+7.09%`、NIS 分组不一致。
+- 负结果复核：
+  - V16 温和 NIS band 小批无法修复 NIS 与 RPE95 的耦合问题，且显著伤害 `outdoor_street`，不作为后续默认路径。
+- 风险状态：
+  - W10 继续 `BLOCKED`。当前证据表明问题不再是“拒绝率/日志/调度”层面，而是雷达速度观测本体与状态预测之间的一致性问题。
+- 下一最小修正方向：
+  - 基于 `analyze_w10_spikes.py` 对 `indoor_floor/mocap_easy/mocap_difficult/outdoor_campus` 做逐帧误差对齐。
+  - 优先检查 REVE 速度残差、雷达速度偏置、时间戳偏移、雷达到体坐标外参方向，而非继续扩大后端协方差参数搜索。

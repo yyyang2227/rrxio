@@ -16,6 +16,10 @@ dvc_rrxio:
     k_alpha: 1.5                    # Gain from degradation score to alpha_R.
     alpha_r_max: 5.0                # Upper bound of alpha_R inflation.
     sigma_min2: 0.0001              # Minimum variance floor for SPD protection.
+    sparse_low_degradation_use_base: true # Use raw REVE covariance when target count is sparse but degradation score is still low.
+    sparse_low_degradation_n_targets_max: 32.0 # Target-count upper bound for sparse-low-degradation base-covariance bypass.
+    sparse_low_degradation_d_r_max: 0.60 # Degradation-score upper bound for sparse-low-degradation base-covariance bypass.
+    sparse_low_degradation_candidate_nis_max: 4.0 # Candidate pre-update NIS must be below this value before bypassing alpha_R/S_k.
   s_k:
     enable: true                    # Enable directional S_k covariance shaping on top of alpha_R.
     apply_gate_enable: true         # Enable light-weight S_k apply gate (lambda3/d_r/n_targets conditions).
@@ -50,13 +54,23 @@ dvc_rrxio:
     tau_r_low: 0.35                 # Low radar quality threshold for cross-modal gate.
     tau_v_low: 0.45                 # Visual low-quality threshold used in cross-modal gate.
     gate_hard_qr_min: 0.20          # Hard reject threshold for extremely low radar quality q_r.
-    gate_soft_k_r: 1.0              # Radar-side gain for soft covariance penalty when not high-quality.
+    gate_soft_k_r: 0.0              # Radar-only soft penalty gain; 0 keeps soft penalty active only for cross-modal degradation.
     gate_soft_k_v: 1.0              # Extra dual-degradation gain, multiplied by radar gap and visual degradation.
     gate_soft_scale_max: 1.4        # Max multiplicative soft penalty on covariance for current visual-only baseline.
     visual_features_ref: 25.0       # Reference valid-feature count for visual sparsity proxy.
     visual_stale_ref_s: 0.20        # Reference time gap (s) for visual staleness proxy.
     visual_w_sparse: 1.0            # Weight of visual sparsity term in d_v.
     visual_w_stale: 1.0             # Weight of visual staleness term in d_v.
+    nis_band_enable: false          # Enable rolling NIS-band covariance controller for W10 full mode.
+    nis_rate_low: 0.01              # Lower acceptable rolling chi2(3,95) exceedance rate.
+    nis_rate_high: 0.08             # Upper acceptable rolling chi2(3,95) exceedance rate.
+    nis_target: 0.05                # Target rolling exceedance rate for consistency control.
+    nis_band_scale_min: 0.6         # Minimum covariance scale when rolling NIS is too conservative.
+    nis_band_scale_max: 3.0         # Maximum covariance scale when rolling NIS is too aggressive.
+    nis_band_window_size: 50        # Number of committed radar updates in the rolling NIS window.
+    nis_shrink_zero_velocity_rate_min: 0.40 # Minimum recent zero-velocity ratio required before low-NIS covariance shrink is allowed.
+    nis_shrink_obs_trace_max: 80.0   # Maximum radar observability trace for low-NIS shrink; high-observability scenes keep scale >= 1.
+    pre_update_nis_enable: false    # Enable current-frame candidate NIS scaling before committing radar update.
 
   scheduler:
     mode: "event_stage2"            # Scheduler mode: legacy | event_stage1 | event_stage2.
@@ -64,6 +78,8 @@ dvc_rrxio:
     watermark_margin_s: 0.002       # Required IMU lead over event timestamp in seconds.
     watermark_max_wait_s: 0.200     # Max wait before watermark timeout/drop handling in seconds.
     radar_imu_window_s: 0.020       # IMU window length for radar angular-rate estimation in seconds.
+    radar_update_time_offset_s: 0.010 # Timestamp offset applied to radar velocity update in seconds.
+    radar_filter_drain_to_update_time: true # In event_stage2, consume IMU into the filter only up to radar update time before committing radar.
     enable_diag: false              # Enable scheduler diagnostic CSV emission.
     diag_output_dir: ""             # Output directory for dvc_sched_diag_<run_id>.csv.
     imu_fast_path: true             # Enable IMU fast-path bypass of normal event queue.

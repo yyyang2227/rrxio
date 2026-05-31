@@ -152,6 +152,19 @@ def check_diag_file(path, require_full_columns):
                 "radar_update_reject_reason",
                 "visual_feature_valid_count",
                 "visual_stale_s",
+                "candidate_nis",
+                "pre_update_nis_scale",
+                "nis_band_scale",
+                "nis_band_state",
+                "nis_rolling_rate",
+                "nis_rolling_mean",
+                "residual_mean",
+                "residual_rmse",
+                "residual_mad",
+                "residual_p95",
+                "snr_mean",
+                "noise_db_mean",
+                "doppler_bias_abs",
             ]
         )
 
@@ -272,6 +285,9 @@ def main():
     parser.add_argument("--max_quality_reject_rate_focus", type=float, default=0.08)
     parser.add_argument("--max_hard_reject_rate_focus", type=float, default=0.03)
     parser.add_argument("--max_consecutive_quality_reject_focus", type=int, default=50)
+    parser.add_argument("--group_guard_enable", type=int, default=1)
+    parser.add_argument("--max_group_rpe_p95_degrade", type=float, default=0.05)
+    parser.add_argument("--max_group_runtime_increase", type=float, default=0.15)
     args = parser.parse_args()
 
     manifest = args.manifest if args.manifest else os.path.join(args.results_root, "run_manifest.csv")
@@ -316,6 +332,9 @@ def main():
             "max_quality_reject_rate_focus": args.max_quality_reject_rate_focus,
             "max_hard_reject_rate_focus": args.max_hard_reject_rate_focus,
             "max_consecutive_quality_reject_focus": args.max_consecutive_quality_reject_focus,
+            "group_guard_enable": int(args.group_guard_enable) != 0,
+            "max_group_rpe_p95_degrade": args.max_group_rpe_p95_degrade,
+            "max_group_runtime_increase": args.max_group_runtime_increase,
         },
         "checks": {},
         "health_failures": [],
@@ -535,6 +554,56 @@ def main():
                 )
     report["checks"]["nis_by_group"] = nis_group_checks
 
+    group_guards = []
+    if int(args.group_guard_enable) != 0:
+      grouped_base = defaultdict(list)
+      grouped_full = defaultdict(list)
+      for row in base_rows:
+          key = "%s/%s" % (text(row.get("dataset", "")), text(row.get("modality", "")))
+          grouped_base[key].append(row)
+      for row in full_rows:
+          key = "%s/%s" % (text(row.get("dataset", "")), text(row.get("modality", "")))
+          grouped_full[key].append(row)
+      for key in sorted(grouped_full.keys()):
+          base_group = grouped_base.get(key, [])
+          full_group = grouped_full.get(key, [])
+          if not base_group:
+              if strict_gate_enable:
+                  append_fail(failures, "group guard missing base rows for %s" % key)
+              continue
+          base_agg = summarize_mode(base_group)
+          full_agg = summarize_mode(full_group)
+          rpe_p95_degrade_group = rel_change(full_agg["rpe_p95"], base_agg["rpe_p95"])
+          runtime_increase_group = rel_change(full_agg["runtime"], base_agg["runtime"])
+          rpe_pass = finite(rpe_p95_degrade_group) and rpe_p95_degrade_group <= args.max_group_rpe_p95_degrade
+          runtime_pass = finite(runtime_increase_group) and runtime_increase_group <= args.max_group_runtime_increase
+          group_guards.append(
+              {
+                  "group": key,
+                  "base_rpe_p95": base_agg["rpe_p95"],
+                  "full_rpe_p95": full_agg["rpe_p95"],
+                  "rpe_p95_degrade": rpe_p95_degrade_group,
+                  "base_runtime": base_agg["runtime"],
+                  "full_runtime": full_agg["runtime"],
+                  "runtime_increase": runtime_increase_group,
+                  "rpe_p95_pass": rpe_pass,
+                  "runtime_pass": runtime_pass,
+              }
+          )
+          if strict_gate_enable and not rpe_pass:
+              append_fail(
+                  failures,
+                  "group RPE95 guard failed for %s: got=%s need <= %.6f"
+                  % (key, str(rpe_p95_degrade_group), args.max_group_rpe_p95_degrade),
+              )
+          if strict_gate_enable and not runtime_pass:
+              append_fail(
+                  failures,
+                  "group runtime guard failed for %s: got=%s need <= %.6f"
+                  % (key, str(runtime_increase_group), args.max_group_runtime_increase),
+              )
+    report["checks"]["group_guards"] = group_guards
+
     health_failures = []
     if health_gate_enable:
         if (not finite(committed_drop)) or committed_drop > args.max_committed_drop:
@@ -599,6 +668,7 @@ def main():
 
     diag_checks = []
     total_starved = 0
+    sched_diag_legacy_skipped = 0
     for mode, rows in ((mode_base, by_mode_manifest.get(mode_base, [])), (mode_full, by_mode_manifest.get(mode_full, []))):
         require_full = (mode == mode_full)
         for row in rows:
@@ -607,14 +677,18 @@ def main():
                 diag_info, local_failures = check_diag_file(diag_file, require_full)
                 diag_checks.append(diag_info)
                 failures.extend(local_failures)
+            scheduler_mode = text(row.get("scheduler_mode", "")).lower()
             sched_file = text(row.get("sched_diag_file", ""))
-            if sched_file:
+            if scheduler_mode == "legacy":
+                sched_diag_legacy_skipped += 1
+            elif sched_file:
                 starved, local_failures = read_sched_starved_count(sched_file)
                 total_starved += starved
                 failures.extend(local_failures)
 
     report["checks"]["diag_files"] = diag_checks
     report["checks"]["total_radar_starved"] = total_starved
+    report["checks"]["sched_diag_legacy_skipped"] = sched_diag_legacy_skipped
     if total_starved != 0:
         if health_gate_enable:
             append_fail(health_failures, "health radar_starved must be 0, got=%d" % total_starved)

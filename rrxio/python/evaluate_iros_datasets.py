@@ -121,6 +121,9 @@ def _append_manifest_row(manifest_csv, row):
         "git_rev_root", "git_rev_reve", "cov_mode", "scheduler_mode", "config_tag", "dvc_unified_config_file",
         "status", "owner", "note",
         "runtime_s", "export_directory", "diag_file", "sched_diag_file", "perf_mode_requested", "perf_mode_effective",
+        "dvc_alpha_r_sparse_low_degradation_use_base", "dvc_alpha_r_sparse_low_degradation_n_targets_max",
+        "dvc_alpha_r_sparse_low_degradation_d_r_max",
+        "dvc_alpha_r_sparse_low_degradation_candidate_nis_max",
         "dvc_sk_apply_gate_enable", "dvc_sk_lambda3_apply_max", "dvc_sk_d_r_apply_min", "dvc_sk_n_targets_apply_max",
         "dvc_sk_obs_trace_apply_max", "dvc_sk_obs_aniso_apply_min",
         "dvc_c3_enable", "dvc_c3_alpha_nis_enable", "dvc_c3_eta", "dvc_c3_rho", "dvc_c3_alpha_min", "dvc_c3_alpha_max",
@@ -130,8 +133,13 @@ def _append_manifest_row(manifest_csv, row):
         "dvc_c3_tau_r_low", "dvc_c3_tau_v_low", "dvc_c3_gate_hard_qr_min", "dvc_c3_gate_soft_k_r",
         "dvc_c3_gate_soft_k_v", "dvc_c3_gate_soft_scale_max",
         "dvc_c3_visual_features_ref", "dvc_c3_visual_stale_ref_s", "dvc_c3_visual_w_sparse", "dvc_c3_visual_w_stale",
+        "dvc_c3_nis_band_enable", "dvc_c3_nis_rate_low", "dvc_c3_nis_rate_high", "dvc_c3_nis_target",
+        "dvc_c3_nis_band_scale_min", "dvc_c3_nis_band_scale_max", "dvc_c3_nis_band_window_size",
+        "dvc_c3_nis_shrink_zero_velocity_rate_min", "dvc_c3_nis_shrink_obs_trace_max",
+        "dvc_c3_pre_update_nis_enable",
         "dvc_scheduler_max_events", "dvc_scheduler_backpressure_high", "dvc_scheduler_backpressure_low",
-        "dvc_scheduler_backpressure_timeout_s", "dvc_scheduler_drain_timeout_s", "dvc_scheduler_imu_fast_path"
+        "dvc_scheduler_backpressure_timeout_s", "dvc_scheduler_drain_timeout_s", "dvc_scheduler_imu_fast_path",
+        "dvc_scheduler_radar_update_time_offset_s", "dvc_scheduler_radar_filter_drain_to_update_time"
     ]
     is_new = not os.path.isfile(manifest_csv)
     with open(manifest_csv, "a", newline="", encoding="utf-8") as f:
@@ -176,6 +184,10 @@ def _write_dvc_unified_config(path,
         "    k_alpha: {k_alpha}\n"
         "    alpha_r_max: {alpha_r_max}\n"
         "    sigma_min2: {sigma_min2}\n"
+        "    sparse_low_degradation_use_base: {sparse_low_degradation_use_base}\n"
+        "    sparse_low_degradation_n_targets_max: {sparse_low_degradation_n_targets_max}\n"
+        "    sparse_low_degradation_d_r_max: {sparse_low_degradation_d_r_max}\n"
+        "    sparse_low_degradation_candidate_nis_max: {sparse_low_degradation_candidate_nis_max}\n"
         "  s_k:\n"
         "    enable: {sk_enable}\n"
         "    apply_gate_enable: {sk_apply_gate_enable}\n"
@@ -217,6 +229,16 @@ def _write_dvc_unified_config(path,
         "    visual_stale_ref_s: {c3_visual_stale_ref_s}\n"
         "    visual_w_sparse: {c3_visual_w_sparse}\n"
         "    visual_w_stale: {c3_visual_w_stale}\n"
+        "    nis_band_enable: {c3_nis_band_enable}\n"
+        "    nis_rate_low: {c3_nis_rate_low}\n"
+        "    nis_rate_high: {c3_nis_rate_high}\n"
+        "    nis_target: {c3_nis_target}\n"
+        "    nis_band_scale_min: {c3_nis_band_scale_min}\n"
+        "    nis_band_scale_max: {c3_nis_band_scale_max}\n"
+        "    nis_band_window_size: {c3_nis_band_window_size}\n"
+        "    nis_shrink_zero_velocity_rate_min: {c3_nis_shrink_zero_velocity_rate_min}\n"
+        "    nis_shrink_obs_trace_max: {c3_nis_shrink_obs_trace_max}\n"
+        "    pre_update_nis_enable: {c3_pre_update_nis_enable}\n"
         "\n"
         "  scheduler:\n"
         "    mode: {scheduler_mode}\n"
@@ -224,6 +246,8 @@ def _write_dvc_unified_config(path,
         "    watermark_margin_s: {watermark_margin_s}\n"
         "    watermark_max_wait_s: {watermark_max_wait_s}\n"
         "    radar_imu_window_s: {radar_imu_window_s}\n"
+        "    radar_update_time_offset_s: {radar_update_time_offset_s}\n"
+        "    radar_filter_drain_to_update_time: {radar_filter_drain_to_update_time}\n"
         "    enable_diag: {enable_diag}\n"
         "    diag_output_dir: {sched_diag_output_dir}\n"
         "    imu_fast_path: {imu_fast_path}\n"
@@ -250,6 +274,10 @@ def _write_dvc_unified_config(path,
         k_alpha=args.dvc_alpha_r_k_alpha,
         alpha_r_max=args.dvc_alpha_r_alpha_r_max,
         sigma_min2=args.dvc_alpha_r_sigma_min2,
+        sparse_low_degradation_use_base=_yaml_bool(args.dvc_alpha_r_sparse_low_degradation_use_base),
+        sparse_low_degradation_n_targets_max=args.dvc_alpha_r_sparse_low_degradation_n_targets_max,
+        sparse_low_degradation_d_r_max=args.dvc_alpha_r_sparse_low_degradation_d_r_max,
+        sparse_low_degradation_candidate_nis_max=args.dvc_alpha_r_sparse_low_degradation_candidate_nis_max,
         sk_enable=_yaml_bool(args.dvc_sk_enable),
         sk_apply_gate_enable=_yaml_bool(args.dvc_sk_apply_gate_enable),
         sk_tau_obs=args.dvc_sk_tau_obs,
@@ -289,11 +317,23 @@ def _write_dvc_unified_config(path,
         c3_visual_stale_ref_s=args.dvc_c3_visual_stale_ref_s,
         c3_visual_w_sparse=args.dvc_c3_visual_w_sparse,
         c3_visual_w_stale=args.dvc_c3_visual_w_stale,
+        c3_nis_band_enable=_yaml_bool(args.dvc_c3_nis_band_enable),
+        c3_nis_rate_low=args.dvc_c3_nis_rate_low,
+        c3_nis_rate_high=args.dvc_c3_nis_rate_high,
+        c3_nis_target=args.dvc_c3_nis_target,
+        c3_nis_band_scale_min=args.dvc_c3_nis_band_scale_min,
+        c3_nis_band_scale_max=args.dvc_c3_nis_band_scale_max,
+        c3_nis_band_window_size=args.dvc_c3_nis_band_window_size,
+        c3_nis_shrink_zero_velocity_rate_min=args.dvc_c3_nis_shrink_zero_velocity_rate_min,
+        c3_nis_shrink_obs_trace_max=args.dvc_c3_nis_shrink_obs_trace_max,
+        c3_pre_update_nis_enable=_yaml_bool(args.dvc_c3_pre_update_nis_enable),
         scheduler_mode=_yaml_quote(scheduler_mode),
         max_events=args.dvc_scheduler_max_events,
         watermark_margin_s=args.dvc_scheduler_watermark_margin_s,
         watermark_max_wait_s=args.dvc_scheduler_watermark_max_wait_s,
         radar_imu_window_s=args.dvc_scheduler_radar_imu_window_s,
+        radar_update_time_offset_s=args.dvc_scheduler_radar_update_time_offset_s,
+        radar_filter_drain_to_update_time=_yaml_bool(args.dvc_scheduler_radar_filter_drain_to_update_time),
         enable_diag=_yaml_bool(args.dvc_scheduler_enable_diag),
         sched_diag_output_dir=_yaml_quote(sched_diag_output_dir),
         imu_fast_path=_yaml_bool(imu_fast_path_enabled),
@@ -522,6 +562,10 @@ def run_feature(args, n_feature, git_rev_root, git_rev_reve):
                                     "sched_diag_file": sched_diag_file,
                                     "perf_mode_requested": args.dvc_perf_mode,
                                     "perf_mode_effective": perf_mode_effective,
+                                    "dvc_alpha_r_sparse_low_degradation_use_base": int(args.dvc_alpha_r_sparse_low_degradation_use_base),
+                                    "dvc_alpha_r_sparse_low_degradation_n_targets_max": args.dvc_alpha_r_sparse_low_degradation_n_targets_max,
+                                    "dvc_alpha_r_sparse_low_degradation_d_r_max": args.dvc_alpha_r_sparse_low_degradation_d_r_max,
+                                    "dvc_alpha_r_sparse_low_degradation_candidate_nis_max": args.dvc_alpha_r_sparse_low_degradation_candidate_nis_max,
                                     "dvc_sk_apply_gate_enable": int(args.dvc_sk_apply_gate_enable),
                                     "dvc_sk_lambda3_apply_max": args.dvc_sk_lambda3_apply_max,
                                     "dvc_sk_d_r_apply_min": args.dvc_sk_d_r_apply_min,
@@ -556,12 +600,26 @@ def run_feature(args, n_feature, git_rev_root, git_rev_reve):
                                     "dvc_c3_visual_stale_ref_s": args.dvc_c3_visual_stale_ref_s,
                                     "dvc_c3_visual_w_sparse": args.dvc_c3_visual_w_sparse,
                                     "dvc_c3_visual_w_stale": args.dvc_c3_visual_w_stale,
+                                    "dvc_c3_nis_band_enable": int(args.dvc_c3_nis_band_enable),
+                                    "dvc_c3_nis_rate_low": args.dvc_c3_nis_rate_low,
+                                    "dvc_c3_nis_rate_high": args.dvc_c3_nis_rate_high,
+                                    "dvc_c3_nis_target": args.dvc_c3_nis_target,
+                                    "dvc_c3_nis_band_scale_min": args.dvc_c3_nis_band_scale_min,
+                                    "dvc_c3_nis_band_scale_max": args.dvc_c3_nis_band_scale_max,
+                                    "dvc_c3_nis_band_window_size": args.dvc_c3_nis_band_window_size,
+                                    "dvc_c3_nis_shrink_zero_velocity_rate_min": args.dvc_c3_nis_shrink_zero_velocity_rate_min,
+                                    "dvc_c3_nis_shrink_obs_trace_max": args.dvc_c3_nis_shrink_obs_trace_max,
+                                    "dvc_c3_pre_update_nis_enable": int(args.dvc_c3_pre_update_nis_enable),
                                     "dvc_scheduler_max_events": args.dvc_scheduler_max_events,
                                     "dvc_scheduler_backpressure_high": args.dvc_scheduler_backpressure_high,
                                     "dvc_scheduler_backpressure_low": args.dvc_scheduler_backpressure_low,
                                     "dvc_scheduler_backpressure_timeout_s": args.dvc_scheduler_backpressure_timeout_s,
                                     "dvc_scheduler_drain_timeout_s": args.dvc_scheduler_drain_timeout_s,
                                     "dvc_scheduler_imu_fast_path": args.dvc_scheduler_imu_fast_path,
+                                    "dvc_scheduler_radar_update_time_offset_s":
+                                        args.dvc_scheduler_radar_update_time_offset_s,
+                                    "dvc_scheduler_radar_filter_drain_to_update_time":
+                                        int(args.dvc_scheduler_radar_filter_drain_to_update_time),
                                 },
                             )
 
@@ -643,6 +701,10 @@ def main():
     parser.add_argument("--dvc_alpha_r_k_alpha", type=float, default=1.5)
     parser.add_argument("--dvc_alpha_r_alpha_r_max", type=float, default=5.0)
     parser.add_argument("--dvc_alpha_r_sigma_min2", type=float, default=1.0e-4)
+    parser.add_argument("--dvc_alpha_r_sparse_low_degradation_use_base", type=int, default=1)
+    parser.add_argument("--dvc_alpha_r_sparse_low_degradation_n_targets_max", type=float, default=32.0)
+    parser.add_argument("--dvc_alpha_r_sparse_low_degradation_d_r_max", type=float, default=0.60)
+    parser.add_argument("--dvc_alpha_r_sparse_low_degradation_candidate_nis_max", type=float, default=4.0)
     parser.add_argument("--dvc_sk_enable", type=int, default=1, help="1 to enable directional S_k shaping, 0 to disable")
     parser.add_argument("--dvc_sk_apply_gate_enable", type=int, default=1, help="1 to enable S_k apply gate, 0 to disable")
     parser.add_argument("--dvc_sk_tau_obs", type=float, default=8.0)
@@ -675,18 +737,30 @@ def main():
     parser.add_argument("--dvc_c3_tau_r_low", type=float, default=0.35)
     parser.add_argument("--dvc_c3_tau_v_low", type=float, default=0.45)
     parser.add_argument("--dvc_c3_gate_hard_qr_min", type=float, default=0.20)
-    parser.add_argument("--dvc_c3_gate_soft_k_r", type=float, default=1.0)
+    parser.add_argument("--dvc_c3_gate_soft_k_r", type=float, default=0.0)
     parser.add_argument("--dvc_c3_gate_soft_k_v", type=float, default=1.0)
     parser.add_argument("--dvc_c3_gate_soft_scale_max", type=float, default=1.4)
     parser.add_argument("--dvc_c3_visual_features_ref", type=float, default=25.0)
     parser.add_argument("--dvc_c3_visual_stale_ref_s", type=float, default=0.20)
     parser.add_argument("--dvc_c3_visual_w_sparse", type=float, default=1.0)
     parser.add_argument("--dvc_c3_visual_w_stale", type=float, default=1.0)
+    parser.add_argument("--dvc_c3_nis_band_enable", type=int, default=0)
+    parser.add_argument("--dvc_c3_nis_rate_low", type=float, default=0.01)
+    parser.add_argument("--dvc_c3_nis_rate_high", type=float, default=0.08)
+    parser.add_argument("--dvc_c3_nis_target", type=float, default=0.05)
+    parser.add_argument("--dvc_c3_nis_band_scale_min", type=float, default=0.6)
+    parser.add_argument("--dvc_c3_nis_band_scale_max", type=float, default=3.0)
+    parser.add_argument("--dvc_c3_nis_band_window_size", type=int, default=50)
+    parser.add_argument("--dvc_c3_nis_shrink_zero_velocity_rate_min", type=float, default=0.40)
+    parser.add_argument("--dvc_c3_nis_shrink_obs_trace_max", type=float, default=80.0)
+    parser.add_argument("--dvc_c3_pre_update_nis_enable", type=int, default=0)
     parser.add_argument("--scheduler_modes", default="legacy", help="Comma-separated scheduler modes")
     parser.add_argument("--dvc_scheduler_max_events", type=int, default=2048)
     parser.add_argument("--dvc_scheduler_watermark_margin_s", type=float, default=0.002)
     parser.add_argument("--dvc_scheduler_watermark_max_wait_s", type=float, default=0.200)
     parser.add_argument("--dvc_scheduler_radar_imu_window_s", type=float, default=0.020)
+    parser.add_argument("--dvc_scheduler_radar_update_time_offset_s", type=float, default=0.010)
+    parser.add_argument("--dvc_scheduler_radar_filter_drain_to_update_time", type=int, default=1)
     parser.add_argument("--dvc_scheduler_backpressure_high", type=int, default=-1)
     parser.add_argument("--dvc_scheduler_backpressure_low", type=int, default=-1)
     parser.add_argument("--dvc_scheduler_backpressure_timeout_s", type=float, default=5.0)
@@ -724,14 +798,26 @@ def main():
         if mode not in ("base", "fixed", "alpha_r", "alpha_r_sk", "alpha_r_sk_nis_rv"):
             raise RuntimeError("Unsupported cov mode: %s" % mode)
     args.dvc_sk_enable = int(args.dvc_sk_enable) != 0
+    args.dvc_alpha_r_sparse_low_degradation_use_base = int(args.dvc_alpha_r_sparse_low_degradation_use_base) != 0
     args.dvc_sk_apply_gate_enable = int(args.dvc_sk_apply_gate_enable) != 0
     args.dvc_c3_enable = int(args.dvc_c3_enable) != 0
     args.dvc_c3_alpha_nis_enable = int(args.dvc_c3_alpha_nis_enable) != 0
     args.dvc_c3_zeta_enable = int(args.dvc_c3_zeta_enable) != 0
     args.dvc_c3_gate_enable = int(args.dvc_c3_gate_enable) != 0
+    args.dvc_c3_nis_band_enable = int(args.dvc_c3_nis_band_enable) != 0
+    args.dvc_c3_pre_update_nis_enable = int(args.dvc_c3_pre_update_nis_enable) != 0
+    args.dvc_scheduler_radar_filter_drain_to_update_time = (
+        int(args.dvc_scheduler_radar_filter_drain_to_update_time) != 0
+    )
     args.cleanup_ros_processes = int(args.cleanup_ros_processes) != 0
     if any(mode == "alpha_r_sk_nis_rv" for mode in args.cov_modes) and not args.dvc_c3_enable:
         raise RuntimeError("cov_mode alpha_r_sk_nis_rv requires --dvc_c3_enable=1")
+    if args.dvc_alpha_r_sparse_low_degradation_n_targets_max <= 0.0:
+        raise RuntimeError("dvc_alpha_r_sparse_low_degradation_n_targets_max must be > 0.")
+    if args.dvc_alpha_r_sparse_low_degradation_d_r_max < 0.0:
+        raise RuntimeError("dvc_alpha_r_sparse_low_degradation_d_r_max must be >= 0.")
+    if args.dvc_alpha_r_sparse_low_degradation_candidate_nis_max <= 0.0:
+        raise RuntimeError("dvc_alpha_r_sparse_low_degradation_candidate_nis_max must be > 0.")
     if args.dvc_sk_tau_obs <= 0.0:
         raise RuntimeError("dvc_sk_tau_obs must be > 0.")
     if args.dvc_sk_c_obs < 0.0:
@@ -740,6 +826,16 @@ def main():
         raise RuntimeError("dvc_sk_s_max must be >= 1.")
     if args.dvc_sk_eps_lambda <= 0.0:
         raise RuntimeError("dvc_sk_eps_lambda must be > 0.")
+    if args.dvc_scheduler_radar_imu_window_s <= 0.0:
+        raise RuntimeError("dvc_scheduler_radar_imu_window_s must be > 0.")
+    if args.dvc_scheduler_radar_update_time_offset_s < 0.0:
+        raise RuntimeError("dvc_scheduler_radar_update_time_offset_s must be >= 0.")
+    if (args.dvc_scheduler_radar_filter_drain_to_update_time and
+            args.dvc_scheduler_radar_update_time_offset_s > args.dvc_scheduler_radar_imu_window_s):
+        raise RuntimeError(
+            "dvc_scheduler_radar_update_time_offset_s must be <= dvc_scheduler_radar_imu_window_s "
+            "when radar_filter_drain_to_update_time is enabled."
+        )
     if args.dvc_sk_lambda3_apply_max <= 0.0:
         raise RuntimeError("dvc_sk_lambda3_apply_max must be > 0.")
     if args.dvc_sk_d_r_apply_min < 0.0:
@@ -790,6 +886,20 @@ def main():
         raise RuntimeError("dvc_c3_visual_stale_ref_s must be > 0.")
     if args.dvc_c3_visual_w_sparse < 0.0 or args.dvc_c3_visual_w_stale < 0.0:
         raise RuntimeError("dvc_c3_visual_w_sparse and dvc_c3_visual_w_stale must be >= 0.")
+    if not (0.0 <= args.dvc_c3_nis_rate_low < args.dvc_c3_nis_target < args.dvc_c3_nis_rate_high < 1.0):
+        raise RuntimeError("NIS band rates must satisfy 0<=low<target<high<1.")
+    if not (0.0 < args.dvc_c3_nis_band_scale_min <= 1.0):
+        raise RuntimeError("dvc_c3_nis_band_scale_min must be in (0,1].")
+    if args.dvc_c3_nis_band_scale_max < 1.0:
+        raise RuntimeError("dvc_c3_nis_band_scale_max must be >= 1.")
+    if args.dvc_c3_nis_band_scale_min > args.dvc_c3_nis_band_scale_max:
+        raise RuntimeError("dvc_c3_nis_band_scale_min must be <= dvc_c3_nis_band_scale_max.")
+    if args.dvc_c3_nis_band_window_size <= 0:
+        raise RuntimeError("dvc_c3_nis_band_window_size must be > 0.")
+    if not (0.0 <= args.dvc_c3_nis_shrink_zero_velocity_rate_min <= 1.0):
+        raise RuntimeError("dvc_c3_nis_shrink_zero_velocity_rate_min must be in [0,1].")
+    if args.dvc_c3_nis_shrink_obs_trace_max <= 0.0:
+        raise RuntimeError("dvc_c3_nis_shrink_obs_trace_max must be > 0.")
     args.scheduler_modes = [m.strip().lower() for m in args.scheduler_modes.split(",") if m.strip()]
     if not args.scheduler_modes:
         raise RuntimeError("No scheduler mode provided.")

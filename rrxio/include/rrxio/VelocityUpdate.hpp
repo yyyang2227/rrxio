@@ -148,6 +148,15 @@ public:
   using Base::doubleRegister_;
   using Base::intRegister_;
   using Base::meas_;
+  using Base::H_;
+  using Base::Hlin_;
+  using Base::Hn_;
+  using Base::innVector_;
+  using Base::Py_;
+  using Base::Pyinv_;
+  using Base::updnoiP_;
+  using Base::y_;
+  using Base::yIdentity_;
   typedef typename Base::mtState mtState;
   typedef typename Base::mtFilterState mtFilterState;
   typedef typename Base::mtInnovation mtInnovation;
@@ -199,6 +208,51 @@ public:
   void setMeasurementNoise(const Eigen::MatrixXd& cov) { Base::updnoiP_ = cov; }
   const VelocityUpdateDiag& getLastDiag() const { return last_diag_; }
   uint64_t getUpdateSeq() const { return last_diag_.seq; }
+
+  bool computeCandidateNis(const mtFilterState& filterState,
+                           const mtMeas& meas,
+                           const Eigen::MatrixXd& cov,
+                           double& nis)
+  {
+    nis = std::numeric_limits<double>::quiet_NaN();
+    if (cov.rows() != mtNoise::D_ || cov.cols() != mtNoise::D_ || !cov.allFinite())
+      return false;
+
+    const mtMeas old_meas = meas_;
+    const Eigen::MatrixXd old_cov = updnoiP_;
+
+    meas_ = meas;
+    updnoiP_ = cov;
+    this->jacState(H_, filterState.state_);
+    Hlin_ = H_;
+    this->jacNoise(Hn_, filterState.state_);
+    this->evalInnovationShort(y_, filterState.state_);
+    Py_ = Hlin_ * filterState.cov_ * Hlin_.transpose() + Hn_ * updnoiP_ * Hn_.transpose();
+    y_.boxMinus(yIdentity_, innVector_);
+
+    const auto restore = [&]() {
+      meas_ = old_meas;
+      updnoiP_ = old_cov;
+    };
+
+    if (!Py_.allFinite() || !innVector_.allFinite())
+    {
+      restore();
+      return false;
+    }
+
+    Pyinv_.setIdentity();
+    Eigen::LLT<MXD> llt(Py_);
+    if (llt.info() != Eigen::Success)
+    {
+      restore();
+      return false;
+    }
+    llt.solveInPlace(Pyinv_);
+    nis = (innVector_.transpose() * Pyinv_ * innVector_)(0);
+    restore();
+    return std::isfinite(nis);
+  }
 
   /** \brief Compute the inovvation term
    *

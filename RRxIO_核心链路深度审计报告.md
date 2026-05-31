@@ -418,3 +418,11 @@
   - 配置：删除废弃 scheduler 顶层参数，统一为 `dvc_rrxio/scheduler/*`。
   - 实验：V4 相对原始 W1 visual 基线改善 ATE/RPE，但 RPE95 变差；分组 NIS 暴露多数过保守、`mocap_difficult` 过自信的问题。
   - 结论：调度和一致性机制并非无效，但当前协方差调制未命中长尾误差来源，W10 保持 `BLOCKED`。
+
+- 2026-05-31（W10 visual-only 原始基线闭环复验）:
+  - `rrxio/include/rrxio/RRxIONode.hpp`: 稀疏低退化 base 协方差回退新增当前帧 `candidate_nis` 判定；只有 `n_targets<=32`、`d_r<=0.60` 且 `candidate_nis<=4.0` 时才允许跳过 `alpha_R/S_k`，避免把高创新帧伪装成低退化帧。
+  - `rrxio/python/evaluate_iros_datasets.py` 与 `rrxio/launch/configs/dvc_rrxio_unified_params.yaml`: 统一记录 `sparse_low_degradation_candidate_nis_max`，默认候选为 `4.0`；`gate_soft_k_r` 默认改为 `0.0`，保留双退化软惩罚但去掉视觉正常时的单边雷达惩罚。
+  - `rrxio/python/gate_w10_check.py`: legacy 调度模式下不再强制读取 `dvc_sched_diag`，非 legacy 路径仍检查 `radar_starved=0`。
+  - 验证：`python3 -m py_compile ...` 通过；`catkin build rrxio` 通过；V15 全量 visual-only 运行完成。
+  - 结果：`health_pass=true`，`strict_pass=false`，证据目录 `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_visual_v15_cross_soft_only_9x3`。
+  - 风险结论：当前阻塞点不是代码可达性或日志完整性，而是雷达速度观测与滤波预测之间的一致性不足。后端协方差缩放无法单独解决 ATE/RPE95 主效应不足，下一轮需审计并修正 REVE 速度残差、偏置、时间戳和雷达到体坐标外参一致性。

@@ -368,3 +368,30 @@ results/dvc_rrxio_publish/
 - [x] 新增门禁脚本：`rrxio/python/gate_w2_check.py` 与 `rrxio/python/gate_w4_check.py`
 - [x] 跑视觉/热成像基线各3次并生成 `baseline_v1_summary.md`
 - [x] 执行 Gate-W2 / Gate-W4 并根据报告更新状态
+
+## 10. 2026-05-31 W10 Visual-Only 原始基线闭环复验（V15/V16）
+
+状态：`BLOCKED`（不得标记 `DONE`）。
+
+本轮源码修正：
+- `RRxIONode` 新增稀疏低退化 base 协方差回退的当前帧候选 NIS 约束：仅当 `n_targets<=32`、`d_r<=0.60` 且以 REVE 原始协方差计算的 `candidate_nis<=4.0` 时才允许跳过 `alpha_R/S_k` 膨胀。
+- `quality_soft_scale` 的默认策略调整为 cross-only：`gate_soft_k_r=0`，避免视觉质量良好时仅因 `q_r` 略低而全局弱化雷达更新。
+- `gate_w10_check.py` 修正 legacy 调度诊断口径：legacy 无 scheduler worker，`dvc_sched_diag` 缺失不再作为失败项；非 legacy 仍检查 `radar_starved`。
+
+主要验证结果：
+- 小批 V15：相对 W1 原始 visual，`outdoor_street` RPE95 改善 `+8.72%`，`mocap_easy/gym/mocap_difficult` 组级 RPE95 恶化均控制在 `5%` 内。
+- 全量 V15：结果目录 `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_visual_v15_cross_soft_only_9x3`。
+- Gate：`health_pass=true`，`strict_pass=false`，报告 `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_visual_v15_cross_soft_only_9x3/gate_w10_report.json`。
+
+严格 Gate 失败项：
+- `ATE degrade=+16.41%`，超过 `<=5%`。
+- `RPE95 improve=-1.45%`，目标 `>=10%`，主效应不足。
+- `indoor_floor/visual` 组级 RPE95 恶化 `+7.09%`，超过 `<=5%`。
+- NIS 分组不一致：`mocap_difficult/visual=9.98%` 偏过自信；`gym/indoor_floor/mocap_dark/mocap_easy/outdoor_campus/outdoor_street` 多数组低于 `1%`，偏保守。
+
+补充验证：
+- V16 温和 NIS band 小批未改善主矛盾，尤其 `outdoor_street` RPE95 从 V15 的 `+8.72%` 变为 `-19.24%`，不进入全量。
+
+结论：
+- 当前后端协方差调制可以改善部分场景（尤其 `outdoor_street`），但无法稳定提升九数据集 visual 的 ATE/RPE95。
+- 下一步不得继续盲扫 `alpha_R/S_k/zeta/alpha_NIS` 参数；应转向 REVE 速度观测本体、雷达时间戳/外参一致性、以及逐帧 RPE spike 对齐后的测量误差来源分析。
