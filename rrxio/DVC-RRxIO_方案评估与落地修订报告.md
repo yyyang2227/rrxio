@@ -379,7 +379,7 @@
 - 状态：`BLOCKED`（strict Gate-W10 仍未通过）
 - 本轮源码级修复（非补丁绕过）：
   - `RRxIONode`：
-    - `alpha_NIS` 改为对称区间 `[alpha_min, alpha_max]`，遗忘支路回归 `alpha_min`。
+    - `alpha_NIS` 改为对称区间 `[alpha_min, alpha_max]`；该回合初版遗忘支路回归 `alpha_min`，后续 visual-only 修复已改为回归中性 `1.0`。
     - `zeta_RV` 改为围绕 `1` 的双向有界缩放（`tanh` 形式）。
     - 质量门控改为“硬拒绝兜底 + 软惩罚主导”，新增 `quality_soft_scale`。
   - `summarize_w10_results.py`：
@@ -403,6 +403,28 @@
     1) `focus_rpe_p95_improve < 10%`
     2) `RPE degrade > 5%`
   - 当前最优候选为 `soft_hi + zeta_c3`，但仍不满足 strict；W9-W10 保持 `BLOCKED`。
+
+### 5.13 W10 visual-only 根因修复与九数据集验证（2026-05-31）
+- 状态：`BLOCKED`（visual-only strict Gate-W10 仍未通过）
+- 范围口径：
+  - W10 后续只以 `visual` 作为投稿主线验证口径；thermal 不再参与 W10 Gate，但代码路径保留兼容。
+  - 评测、汇总、门禁脚本新增 `--modalities visual|thermal|visual,thermal`；visual-only Gate 检测到 thermal 行会直接失败。
+- 源码级修复：
+  - `quality_soft_scale` 从“视觉好也可能惩罚雷达”的旧形式，改为“雷达质量不足为主、双退化额外惩罚”：
+    `k_r max(0,tau_r_high-q_r) + k_v max(0,tau_r_high-q_r) max(0,tau_v_low-q_v)`。
+  - `zeta_RV` 改为围绕参考退化点居中的 `tanh` 形式，并新增 `zeta_dr_ref/zeta_dv_ref`。
+  - `alpha_NIS` 未提交/跳过分支改为回归中性 `1.0`，避免低边界粘滞；`alpha_nis_sat` 同步修正为统计上下边界真实饱和。
+  - 统一 YAML 与评测默认参数更新为当前 visual-only 阻塞最优基线：`alpha_min=1.0,zeta_min=1.0,gate_soft_scale_max=1.4`。
+- 九数据集 visual-only 实验结论：
+  - V1（softfix）：`NIS` 相对下降 `36.88%`，但 `RPE degrade=6.96%`、`RPE95 improve=-18.83%`，strict FAIL。
+  - V2（centered zeta）：`RPE degrade=6.56%`、`RPE95 improve=-18.89%`、`NIS` 相对下降不足 `15%`，strict FAIL。
+  - V3（VC1）：`ATE degrade=15.69%`、`RPE95 improve=-19.79%`，strict FAIL。
+  - V4（selective inflation）：当前最优阻塞基线，`ATE degrade=-10.08%`、`NIS` 相对下降 `24.11%`、`runtime=-1.98%`、`committed_drop=-0.46%`；但 `RPE degrade=5.53%`、`RPE95 improve=-5.82%`，strict FAIL。
+  - V5（hard reject probe）：硬拒绝低 `q_r` 帧能局部改善 `mocap_medium`，但会使 `mocap_easy` 提交数下降 `25.93%` 且 `ATE degrade=47.85%`，不能作为全局策略。
+- 风险再评估：
+  - 已确认 Contribution-3 对一致性指标有效：V4 `NIS` 相对下降 `24.11%` 且 `alpha_nis_sat_rate=0`。
+  - 仍未证明其能稳定改善 visual RPE95 长尾；主风险从“机制不可运行”转为“少数轨迹长尾段的协方差调制方向与误差尖峰不匹配”。
+  - 下一轮不建议继续大网格扫参，应做逐帧 spike 关联分析，定位 `zeta_rv/quality_soft_scale/alpha_nis_new` 与 RPE95 异常段之间的因果关系。
 
 ### 《边界警示》
 - 以上修正优先级遵循“先消除参数/调度不一致，再引入新统计模型”。
@@ -663,3 +685,14 @@ addUpdateMeas<2>(v, t_meas);
   - `health_gate` 全通过（`radar_starved=0`，拒绝率/硬拒绝可追踪）。
   - `strict_gate` 仍失败，主失败项收敛为 `focus_rpe_p95_improve<10%` 与 `RPE degrade>5%`。
   - 阶段状态保持 `W9-W10=BLOCKED`，不进入 W11+。
+
+### 2026-05-31（v2.1）
+- 执行 W10 visual-only 根因修复与九数据集验证：
+  - `evaluate_iros_datasets.py` / `summarize_w10_results.py` / `gate_w10_check.py`：新增 `--modalities`，visual-only Gate 显式拒绝 thermal 混入。
+  - `RRxIONode`：修正 `quality_soft_scale` 为“雷达退化主导 + 双退化额外惩罚”；`zeta_RV` 改为以 `zeta_dr_ref/zeta_dv_ref` 为中心；`alpha_NIS` 未提交分支回归中性 `1.0` 并修正饱和计数。
+  - `dvc_rrxio_unified_params.yaml`：固化当前 visual-only 阻塞最优基线参数 `alpha_min=1.0,zeta_min=1.0,gate_soft_scale_max=1.4,zeta_dr_ref=0.60,zeta_dv_ref=0.60`。
+- 实验：
+  - 完成 V1/V2/V3/V4 九数据集 visual-only 矩阵与 V5 硬拒绝探针。
+  - 当前最优：`dvc_w10_visual_v4_selective_inflation`，`health_pass=true`，`strict_pass=false`。
+- 结论：
+  - V4 改善 `ATE`、`NIS` 与 runtime，但未改善 visual RPE95 长尾；W10 仍保持 `BLOCKED`，不得标记 `DONE`。

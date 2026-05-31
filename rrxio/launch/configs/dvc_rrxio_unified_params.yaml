@@ -33,24 +33,26 @@ dvc_rrxio:
     alpha_nis_enable: true          # Enable NIS-driven inflation feedback.
     eta: 0.03                       # NIS feedback gain in alpha_nis update law.
     rho: 0.98                       # Forgetting factor when radar update is skipped/rejected.
-    alpha_min: 0.90                 # Lower bound of alpha_nis (allows symmetric scaling around 1.0).
+    alpha_min: 1.0                  # W10 visual-only blocked baseline: neutral lower bound, no blind covariance shrink.
     alpha_max: 8.0                  # Saturation upper bound for alpha_nis.
     zeta_enable: true               # Enable radar-visual coupling scale zeta_RV.
-    theta0: -1.2                    # zeta_RV bias term.
-    theta1: 0.6                     # zeta_RV weight for radar degradation d_r.
-    theta2: 0.4                     # zeta_RV weight for visual degradation d_v.
-    theta3: 0.8                     # zeta_RV cross-term weight d_r*d_v.
-    zeta_min: 0.85                  # Minimum zeta_RV scale.
+    theta0: 0.0                     # Balanced zeta_RV bias term around the reference degradation point.
+    theta1: 0.5                     # zeta_RV weight for centered radar degradation (d_r - zeta_dr_ref).
+    theta2: 0.5                     # zeta_RV weight for centered visual degradation (d_v - zeta_dv_ref).
+    theta3: 0.6                     # zeta_RV cross-term weight for centered radar/visual degradation.
+    zeta_dr_ref: 0.60               # Reference radar degradation used to center zeta_RV.
+    zeta_dv_ref: 0.60               # Reference visual degradation used to center zeta_RV.
+    zeta_min: 1.0                   # Minimum zeta_RV scale; keep >=1.0 to avoid strengthening radar in visual-only runs.
     zeta_span: 0.25                 # Symmetric zeta span around 1.0 (1±span*tanh(raw)).
-    zeta_max: 3.0                   # Saturation upper bound for zeta_RV.
+    zeta_max: 1.25                  # Saturation upper bound for balanced zeta_RV.
     gate_enable: true               # Enable explicit quality gate for radar update acceptance.
     tau_r_high: 0.55                # High radar quality threshold.
     tau_r_low: 0.35                 # Low radar quality threshold for cross-modal gate.
     tau_v_low: 0.45                 # Visual low-quality threshold used in cross-modal gate.
     gate_hard_qr_min: 0.20          # Hard reject threshold for extremely low radar quality q_r.
     gate_soft_k_r: 1.0              # Radar-side gain for soft covariance penalty when not high-quality.
-    gate_soft_k_v: 1.0              # Visual-side gain for soft covariance penalty when not high-quality.
-    gate_soft_scale_max: 3.0        # Max multiplicative soft penalty on covariance.
+    gate_soft_k_v: 1.0              # Extra dual-degradation gain, multiplied by radar gap and visual degradation.
+    gate_soft_scale_max: 1.4        # Max multiplicative soft penalty on covariance for current visual-only baseline.
     visual_features_ref: 25.0       # Reference valid-feature count for visual sparsity proxy.
     visual_stale_ref_s: 0.20        # Reference time gap (s) for visual staleness proxy.
     visual_w_sparse: 1.0            # Weight of visual sparsity term in d_v.

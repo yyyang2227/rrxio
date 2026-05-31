@@ -148,14 +148,23 @@ $$
 d_{V,k}=\operatorname{softplus}(\mathbf w_V^\top \mathbf g_V(\boldsymbol\phi_{V,k})+b_V)
 $$
 
-并构造跨模态协方差耦合项：
+并构造跨模态协方差耦合项。当前工程实现不再采用单边 `1+softplus`，而是围绕参考退化点居中，避免在 visual 数据中长期单边削弱雷达约束：
 
 $$
 \zeta_{RV,k}=
-1+\operatorname{softplus}(\theta_0+\theta_1d_{R,k}+\theta_2d_{V,k}+\theta_3d_{R,k}d_{V,k})
+\operatorname{clip}
+\left[
+1+s_\zeta\tanh\left(
+\theta_0+\theta_1(d_{R,k}-d_{R,\mathrm{ref}})
++\theta_2(d_{V,k}-d_{V,\mathrm{ref}})
++\theta_3(d_{R,k}-d_{R,\mathrm{ref}})(d_{V,k}-d_{V,\mathrm{ref}})
+\right),
+\zeta_{\min},
+\zeta_{\max}
+\right]
 $$
 
-其中交叉项 $d_{R,k}d_{V,k}$ 是本方法区别于简单自适应权重的关键。它允许系统区分“视觉差但雷达可靠”和“视觉与雷达同时退化”两类情形。
+其中交叉项 $(d_{R,k}-d_{R,\mathrm{ref}})(d_{V,k}-d_{V,\mathrm{ref}})$ 是本方法区别于简单自适应权重的关键。它允许系统区分“视觉差但雷达可靠”和“视觉与雷达同时退化”两类情形。
 
 同时，利用雷达速度观测的 NIS：
 
@@ -518,10 +527,20 @@ $$
 \alpha_{R,k}=1+\operatorname{softplus}(a_R d_{R,k}+b_{R\alpha})
 $$
 
-跨模态视觉-雷达耦合因子：
+跨模态视觉-雷达耦合因子（当前工程实现采用参考点居中形式）：
 
 $$
-\zeta_{RV,k}=1+\operatorname{softplus}(\theta_0+\theta_1d_{R,k}+\theta_2d_{V,k}+\theta_3d_{R,k}d_{V,k})
+\zeta_{RV,k}=
+\operatorname{clip}
+\left[
+1+s_\zeta\tanh\left(
+\theta_0+\theta_1(d_{R,k}-d_{R,\mathrm{ref}})
++\theta_2(d_{V,k}-d_{V,\mathrm{ref}})
++\theta_3(d_{R,k}-d_{R,\mathrm{ref}})(d_{V,k}-d_{V,\mathrm{ref}})
+\right),
+\zeta_{\min},
+\zeta_{\max}
+\right]
 $$
 
 方向性协方差塑形矩阵：
@@ -542,7 +561,7 @@ $$
 }
 $$
 
-由于 $\alpha_{R,k}\ge1$、$\alpha^{\text{NIS}}_{k-1}\ge1$、$\zeta_{RV,k}\ge1$ 且 $s_{\ell,k}\ge1$，该协方差重标定为保守型修正。若 $\mathbf\Sigma^{\text{REVE}}_{v,k}$ 半正定，则加入 $\sigma^2_{v,\min}\mathbf I$ 后可保证 $\tilde{\mathbf R}_{R,k}$ 严格正定。
+当前 visual-only 阻塞最优基线采用 $\alpha_{\min}=1$、$\zeta_{\min}=1$，因此 $\alpha_{R,k}\ge1$、$\alpha^{\text{NIS}}_{k-1}\ge1$、$\zeta_{RV,k}\ge1$ 且 $s_{\ell,k}\ge1$，该配置为保守型修正。工程实现仍保留探索性双向边界（$\alpha_{\min}<1$ 或 $\zeta_{\min}<1$），但当前九数据集 visual-only 实验未证明其可通过 strict Gate。若 $\mathbf\Sigma^{\text{REVE}}_{v,k}$ 半正定，则加入 $\sigma^2_{v,\min}\mathbf I$ 后可保证 $\tilde{\mathbf R}_{R,k}$ 严格正定。
 
 ---
 
@@ -574,12 +593,12 @@ $$
 \left[
 \alpha^{\text{NIS}}_{k-1}
 \exp\left(\eta\left(\frac{\gamma_{R,k}}{3}-1\right)\right),
-1,
+\alpha_{\min},
 \alpha_{\max}
 \right]
 $$
 
-若当前帧跳过雷达更新，则采用遗忘机制：
+若当前帧跳过雷达更新，则采用回归中性值的遗忘机制，而不是回归 $\alpha_{\min}$：
 
 $$
 \alpha^{\text{NIS}}_{k}=1+\rho(\alpha^{\text{NIS}}_{k-1}-1),\qquad 0<\rho<1
@@ -711,7 +730,8 @@ Procedure:
 28: S_k ← V_k diag(s_1,k, s_2,k, s_3,k) V_kᵀ
 
 29: α_R,k ← 1 + softplus(a_R d_R,k + b_Rα)
-30: ζ_RV,k ← 1 + softplus(θ_0 + θ_1 d_R,k + θ_2 d_V,k + θ_3 d_R,k d_V,k)
+30: ζ_RV,k ← clip(1 + sζ tanh(θ_0 + θ_1(d_R,k-d_R,ref) + θ_2(d_V,k-d_V,ref)
+        + θ_3(d_R,k-d_R,ref)(d_V,k-d_V,ref)), ζ_min, ζ_max)
 
 31: R_R,k ← α_R,k · α_NIS,k-1 · ζ_RV,k · S_k Σ_REVE,k S_kᵀ + σ²_v,min I
 32: R_R,k ← 0.5 · (R_R,k + R_R,kᵀ)
@@ -776,9 +796,9 @@ Procedure:
 
 第 23–28 行：方向性膨胀只在弱可观方向触发，避免与 $\Sigma^{\text{REVE}}$ 中已有不确定性重复作用。
 
-第 30 行：$\zeta_{RV,k}$ 中的 $d_Rd_V$ 是跨模态耦合的核心，防止系统在视觉退化时无条件增强雷达观测。
+第 30 行：$\zeta_{RV,k}$ 中的居中交叉项 $(d_R-d_{R,\mathrm{ref}})(d_V-d_{V,\mathrm{ref}})$ 是跨模态耦合的核心，防止系统在视觉退化时无条件增强或无条件削弱雷达观测。
 
-第 31 行：最终协方差始终采用保守膨胀，不人为压缩 REVE 原始协方差。
+第 31 行：当前 visual-only 阻塞最优基线采用保守膨胀（`alpha_min=zeta_min=1`），不人为压缩 REVE 原始协方差。
 
 第 36–42 行：门控逻辑区分“雷达高度可靠”和“视觉退化但雷达尚可”。
 
@@ -1268,7 +1288,7 @@ runtime_backend
 |---|---|
 | RRxIO + only visual gate | 排除“只靠视觉门控”的质疑 |
 | RRxIO + only NIS feedback | 排除“只靠 NIS 自适应”的质疑 |
-| DVC-RRxIO without $d_Rd_V$ | 验证跨模态交叉项必要性 |
+| DVC-RRxIO without centered interaction | 验证 $(d_R-d_{R,\mathrm{ref}})(d_V-d_{V,\mathrm{ref}})$ 跨模态交叉项必要性 |
 
 ---
 
@@ -1570,3 +1590,20 @@ $$
   - ATE/RPE 中位数：未恶化
   - 运行时中位数：未超预算（`-0.48%`）
 - 证据目录：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w6_alpha_r`
+
+---
+
+## 附录B：当前工程实施状态快照（2026-05-31）
+
+- W7-W8（Contribution-2，`S_k` 方向性塑形）：保持 `BLOCKED`。
+  - 最优小批组合：`d_r=0.70, obs_trace=55, c_obs=0.35, tau_obs=8, s_max=1.8~2.2`
+  - 主要原因：`rpe_p95_improve=+9.495%`，未达到 strict Gate-W8 的 `>=20%`。
+- W9-W10（Contribution-3，visual-only）：保持 `BLOCKED`。
+  - 当前工程主线：只以 `visual` 做 W10 Gate，thermal 路径保留但不计入当前投稿主线验证。
+  - 当前最优阻塞基线：`dvc_w10_visual_v4_selective_inflation`
+  - 关键指标：`ATE degrade=-10.08%`，`NIS` 相对下降 `24.11%`，`runtime=-1.98%`，`committed_drop=-0.46%`。
+  - 失败项：`RPE degrade=5.53%`（阈值 `<=5%`），`RPE95 improve=-5.82%`（阈值 `>=10%`）。
+- 已验证不宜作为全局修复的路径：
+  - 低 `q_r` 硬拒绝可局部改善 `mocap_medium`，但会导致 `mocap_easy` 提交数下降 `25.93%` 且 `ATE degrade=47.85%`。
+- 后续最小研究方向：
+  - 不继续盲扫全局参数；优先逐帧关联 `zeta_rv/quality_soft_scale/alpha_nis_new` 与 RPE95 spike，定位长尾段是否来自雷达约束相位、视觉残差质量代理失真或局部外参/时间同步敏感性。

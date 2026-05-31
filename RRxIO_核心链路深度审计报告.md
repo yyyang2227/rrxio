@@ -273,7 +273,7 @@
 
 8.2 W9-W10 根因修复回合（2026-05-30）：
 - 已实施源码级修复：
-  - `alpha_NIS` 从单边区间改为对称区间 `[alpha_min, alpha_max]`，遗忘支路回归 `alpha_min`。
+  - `alpha_NIS` 从单边区间改为对称区间 `[alpha_min, alpha_max]`；该回合初版遗忘支路回归 `alpha_min`，后续 visual-only 修复已改为回归中性 `1.0`。
   - `zeta_RV` 从单边 `1+softplus` 改为围绕 `1` 的有界双向缩放（`tanh` 形式）。
   - 质量门控从“直接拒绝”重构为“硬拒绝兜底 + 软惩罚主导”，并新增 `quality_soft_scale/quality_hard_reject/quality_gate_stage` 诊断。
   - `summarize_w10_results.py` 与 `gate_w10_check.py` 完成机制健康口径修复（`health_pass + strict_pass` 双判定）。
@@ -286,6 +286,23 @@
   - `health_gate`: PASS（`radar_starved=0`，拒绝统计一致，提交计数无异常下降）。
   - `strict_gate`: FAIL（主失败项稳定为 `focus_rpe_p95_improve<10%` 与 `RPE degrade>5%`）。
   - 阶段状态：`W9-W10 = BLOCKED`（不得标记 `DONE`）。
+
+8.3 W10 visual-only 根因修复与九数据集验证（2026-05-31）：
+- 入口与口径：
+  - `evaluate_iros_datasets.py`、`summarize_w10_results.py`、`gate_w10_check.py` 新增 `--modalities`。
+  - W10 主验证固定为 `visual`，Gate 显式拒绝 thermal 行混入；thermal 代码路径未删除。
+- 关键源码修正：
+  - `quality_soft_scale` 改为雷达退化主导、双退化额外惩罚，避免视觉质量高时无意义削弱雷达约束。
+  - `zeta_RV` 改为以 `zeta_dr_ref/zeta_dv_ref` 为参考点的居中 `tanh` 形式，避免实际数据中长期单边放大。
+  - `alpha_NIS` 未提交/跳过分支回归中性 `1.0`，不是回归 `alpha_min`；下边界饱和仅在 `alpha_min<1` 时计入 `alpha_nis_sat`。
+  - 当前统一配置固化 visual-only 阻塞最优基线：`alpha_min=1.0,zeta_min=1.0,gate_soft_scale_max=1.4`。
+- 九数据集 visual-only 证据：
+  - V4 最优目录：`/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_visual_v4_selective_inflation`
+  - V4 结果：`health_pass=true`、`strict_pass=false`；`ATE degrade=-10.08%`、`NIS` 相对下降 `24.11%`、`runtime=-1.98%`、`committed_drop=-0.46%`，但 `RPE degrade=5.53%`、`RPE95 improve=-5.82%`。
+  - V5 硬拒绝探针：局部改善 `mocap_medium`，但 `mocap_easy` 出现 `committed_drop=25.93%` 与 `ATE degrade=47.85%`，证明低 `q_r` 硬拒绝不能作为通用根因修复。
+- 当前判定：
+  - 机制健康已改善，但 RPE95 长尾未改善；W10 visual-only 必须保持 `BLOCKED`。
+  - 后续应做逐帧 spike 对齐，而不是继续扩大全局参数搜索。
 
 ---
 
@@ -373,3 +390,8 @@
   - 脚本：`summarize_w10_results.py` 修正 reject 统计口径并新增健康统计；`gate_w10_check.py` 新增 `health_pass/strict_pass` 双判定。
   - 实验：完成 R0/R1/R2/R3 四轮小批收敛，最优为 `soft_hi + zeta_c3`，但 strict Gate-W10 仍未通过。
   - 结论：健康门禁通过、严格门禁失败；W9-W10 状态继续保持 `BLOCKED`。
+- 2026-05-31（W10 visual-only 根因修复与九数据集验证）：
+  - 代码：新增 visual-only 评测/汇总/Gate 口径；`quality_soft_scale` 改为雷达退化主导；`zeta_RV` 改为参考点居中；`alpha_NIS` 未提交分支回归中性 `1.0` 并修正饱和统计。
+  - 配置：统一参数固化当前 visual-only 阻塞最优基线 `alpha_min=1.0,zeta_min=1.0,gate_soft_scale_max=1.4,zeta_dr_ref=0.60,zeta_dv_ref=0.60`。
+  - 实验：V4 九数据集 visual-only `health_pass=true`、`strict_pass=false`；V5 硬拒绝探针验证低 `q_r` 帧不能全局拒绝。
+  - 结论：W10 visual-only 当前最佳仍为 `BLOCKED`，不得标记 `DONE`；下一轮需逐帧定位 RPE95 spike。

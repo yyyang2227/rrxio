@@ -141,6 +141,16 @@ def safe_rate(numer, denom):
     return float(numer) / float(denom)
 
 
+def parse_modalities(raw):
+    modalities = {item.strip().lower() for item in str(raw).split(",") if item.strip()}
+    if not modalities:
+        raise RuntimeError("No modality provided.")
+    unsupported = modalities.difference({"visual", "thermal"})
+    if unsupported:
+        raise RuntimeError("Unsupported modalities: %s" % ",".join(sorted(unsupported)))
+    return modalities
+
+
 def read_diag_stats(diag_file):
     stats = {
         "rows": 0,
@@ -248,7 +258,11 @@ def main():
     parser.add_argument("--output_summary", default="")
     parser.add_argument("--output_focus_csv", default="")
     parser.add_argument("--stage_filter", default="")
-    parser.add_argument("--focus_datasets", default="mocap_dark,mocap_dark_fast,indoor_floor,outdoor_street")
+    parser.add_argument(
+        "--focus_datasets",
+        default="mocap_easy,mocap_medium,mocap_difficult,mocap_dark,mocap_dark_fast,gym,indoor_floor,outdoor_campus,outdoor_street",
+    )
+    parser.add_argument("--modalities", default="visual", help="Comma-separated modalities to summarize: visual,thermal")
     args = parser.parse_args()
 
     manifest = args.manifest if args.manifest else os.path.join(args.results_root, "run_manifest.csv")
@@ -257,6 +271,7 @@ def main():
     output_focus_csv = args.output_focus_csv if args.output_focus_csv else os.path.join(args.results_root, "w10_focus_metrics.csv")
 
     focus_datasets = {x.strip() for x in args.focus_datasets.split(",") if x.strip()}
+    modalities = parse_modalities(args.modalities)
 
     with open(manifest, "r", encoding="utf-8") as f:
         manifest_rows = list(csv.DictReader(f))
@@ -266,6 +281,8 @@ def main():
         if row.get("status", "") != "SUCCESS":
             continue
         if args.stage_filter and row.get("stage", "") != args.stage_filter:
+            continue
+        if row.get("modality", "").strip().lower() not in modalities:
             continue
 
         run_id = row.get("run_id", "")
@@ -429,6 +446,7 @@ def main():
 
     with open(output_summary, "w", encoding="utf-8") as f:
         f.write("# W10 Summary\n\n")
+        f.write("Modalities: %s\n\n" % ",".join(sorted(modalities)))
         f.write("## Overall by cov_mode\n\n")
         f.write("| cov_mode | n_runs | ate_median | rpe_median | rpe_p95_median | runtime_median_s | nis_exceed_rate | alpha_nis_sat_rate | committed_total | starved_total | quality_reject_total | hard_reject_total | quality_reject_rate | max_consecutive_quality_reject |\n")
         f.write("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")

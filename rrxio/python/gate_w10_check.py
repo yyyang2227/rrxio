@@ -85,6 +85,16 @@ def parse_name_set(raw):
     return {item.strip() for item in str(raw).split(",") if item.strip()}
 
 
+def parse_modalities(raw):
+    modalities = {item.strip().lower() for item in str(raw).split(",") if item.strip()}
+    if not modalities:
+        raise RuntimeError("No modality provided.")
+    unsupported = modalities.difference({"visual", "thermal"})
+    if unsupported:
+        raise RuntimeError("Unsupported modalities: %s" % ",".join(sorted(unsupported)))
+    return modalities
+
+
 def check_diag_file(path, require_full_columns):
     info = {
         "path": path,
@@ -220,7 +230,11 @@ def main():
     parser.add_argument("--stage_filter", default="")
     parser.add_argument("--mode_base", default="alpha_r_sk")
     parser.add_argument("--mode_full", default="alpha_r_sk_nis_rv")
-    parser.add_argument("--focus_datasets", default="mocap_dark,mocap_dark_fast,indoor_floor,outdoor_street")
+    parser.add_argument(
+        "--focus_datasets",
+        default="mocap_easy,mocap_medium,mocap_difficult,mocap_dark,mocap_dark_fast,gym,indoor_floor,outdoor_campus,outdoor_street",
+    )
+    parser.add_argument("--modalities", default="visual", help="Comma-separated modalities to gate: visual,thermal")
     parser.add_argument("--min_rpe_p95_improve_focus", type=float, default=0.10)
     parser.add_argument("--min_nis_relative_drop_focus", type=float, default=0.15)
     parser.add_argument("--max_alpha_nis_sat_rate_focus", type=float, default=0.10)
@@ -230,6 +244,7 @@ def main():
     parser.add_argument("--max_nis_abs_increase_pp", type=float, default=1.0)
     parser.add_argument("--max_committed_drop", type=float, default=0.05)
     parser.add_argument("--repeat_min_runs", type=int, default=3)
+    parser.add_argument("--require_focus_datasets", type=int, default=1)
     parser.add_argument("--max_repeat_ate_cv", type=float, default=0.10)
     parser.add_argument("--max_repeat_rpe_cv", type=float, default=0.10)
     parser.add_argument("--max_repeat_update_rel_range", type=float, default=0.05)
@@ -255,6 +270,7 @@ def main():
             "mode_base": args.mode_base,
             "mode_full": args.mode_full,
             "focus_datasets": args.focus_datasets,
+            "modalities": args.modalities,
             "min_rpe_p95_improve_focus": args.min_rpe_p95_improve_focus,
             "min_nis_relative_drop_focus": args.min_nis_relative_drop_focus,
             "max_alpha_nis_sat_rate_focus": args.max_alpha_nis_sat_rate_focus,
@@ -264,6 +280,7 @@ def main():
             "max_nis_abs_increase_pp": args.max_nis_abs_increase_pp,
             "max_committed_drop": args.max_committed_drop,
             "repeat_min_runs": args.repeat_min_runs,
+            "require_focus_datasets": int(args.require_focus_datasets) != 0,
             "max_repeat_ate_cv": args.max_repeat_ate_cv,
             "max_repeat_rpe_cv": args.max_repeat_rpe_cv,
             "max_repeat_update_rel_range": args.max_repeat_update_rel_range,
@@ -286,6 +303,7 @@ def main():
     failures = []
     health_gate_enable = int(args.health_gate_enable) != 0
     strict_gate_enable = int(args.strict_gate_enable) != 0
+    modalities = parse_modalities(args.modalities)
 
     if not os.path.isfile(manifest):
         append_fail(failures, "manifest not found: %s" % manifest)
@@ -302,6 +320,32 @@ def main():
     if args.stage_filter:
         manifest_rows = [r for r in manifest_rows if text(r.get("stage", "")) == args.stage_filter]
         metric_rows = [r for r in metric_rows if text(r.get("stage", "")) == args.stage_filter]
+
+    manifest_bad_modalities = sorted(
+        {text(r.get("modality", "")).lower() for r in manifest_rows if text(r.get("modality", "")).lower() not in modalities}
+    )
+    metric_bad_modalities = sorted(
+        {text(r.get("modality", "")).lower() for r in metric_rows if text(r.get("modality", "")).lower() not in modalities}
+    )
+    if manifest_bad_modalities:
+        append_fail(
+            failures,
+            "manifest contains modalities outside %s: %s"
+            % (",".join(sorted(modalities)), ",".join(manifest_bad_modalities)),
+        )
+    if metric_bad_modalities:
+        append_fail(
+            failures,
+            "metrics contains modalities outside %s: %s"
+            % (",".join(sorted(modalities)), ",".join(metric_bad_modalities)),
+        )
+    manifest_rows = [r for r in manifest_rows if text(r.get("modality", "")).lower() in modalities]
+    metric_rows = [r for r in metric_rows if text(r.get("modality", "")).lower() in modalities]
+    report["checks"]["modalities"] = {
+        "selected": sorted(modalities),
+        "manifest_disallowed": manifest_bad_modalities,
+        "metrics_disallowed": metric_bad_modalities,
+    }
 
     success_manifest = [r for r in manifest_rows if r.get("status", "") == "SUCCESS"]
     by_mode_manifest = defaultdict(list)
@@ -360,6 +404,22 @@ def main():
     focus_set = parse_name_set(args.focus_datasets)
     base_focus = [r for r in base_rows if text(r.get("dataset", "")) in focus_set]
     full_focus = [r for r in full_rows if text(r.get("dataset", "")) in focus_set]
+    if strict_gate_enable and int(args.require_focus_datasets) != 0:
+        for dataset in sorted(focus_set):
+            base_count = sum(1 for r in base_rows if text(r.get("dataset", "")) == dataset)
+            full_count = sum(1 for r in full_rows if text(r.get("dataset", "")) == dataset)
+            if base_count < args.repeat_min_runs:
+                append_fail(
+                    failures,
+                    "focus dataset base runs too few for %s: %d < %d"
+                    % (dataset, base_count, args.repeat_min_runs),
+                )
+            if full_count < args.repeat_min_runs:
+                append_fail(
+                    failures,
+                    "focus dataset full runs too few for %s: %d < %d"
+                    % (dataset, full_count, args.repeat_min_runs),
+                )
     focus_base_agg = summarize_mode(base_focus)
     focus_full_agg = summarize_mode(full_focus)
 

@@ -227,7 +227,7 @@ W10 阶段（`zeta_RV + 质量门控`）三档（固定 A0）：
 实施内容（源码级）：
 - `RRxIONode`：Contrib3 由“硬拒绝优先”改为“硬拒绝兜底 + 软惩罚主导”，新增
   `quality_soft_scale / quality_hard_reject / quality_gate_stage` 诊断链。
-- `alpha_NIS`：区间由单边改为对称可配置（`[alpha_min, alpha_max]`），遗忘支路回归 `alpha_min`。
+- `alpha_NIS`：区间由单边改为对称可配置（`[alpha_min, alpha_max]`），该回合初版遗忘支路回归 `alpha_min`；后续 visual-only 根因修复已修正为回归中性 `1.0`。
 - `zeta_RV`：由单边 `1+softplus` 改为以 `1` 为中心的有界双向缩放（`tanh` 形式）。
 - `summarize_w10_results.py`：`quality_reject_count` 改为仅统计 `radar_update_reject_reason=="quality_gate"`；
   新增 `quality_reject_rate / hard_reject_count / max_consecutive_quality_reject`。
@@ -251,6 +251,36 @@ W10 阶段（`zeta_RV + 质量门控`）三档（固定 A0）：
   1) `focus_rpe_p95_improve < 10%`
   2) `RPE degrade > 5%`
 - 阶段状态维持：`W9-W10 = BLOCKED`（不得标记 `DONE`）。
+
+## 4.10 W10 visual-only 根因修复与九数据集验证（2026-05-31）
+范围变更：
+- 后续 W10 实验主线固定为 `visual-only`：`9序列 × visual × 3次`，不再把 thermal 纳入 W10 Gate；代码仍保留 thermal 兼容路径。
+- 新增 `--modalities visual|thermal|visual,thermal` 到 `evaluate_iros_datasets.py`、`summarize_w10_results.py`、`gate_w10_check.py`。
+- `gate_w10_check.py --modalities visual` 若发现 manifest 或 metrics 混入 thermal 行，直接 FAIL，避免口径污染。
+
+源码修正：
+- `RRxIONode`：质量软惩罚改为“雷达质量不足为主、双退化额外惩罚”：
+  `penalty = k_r max(0,tau_r_high-q_r) + k_v max(0,tau_r_high-q_r) max(0,tau_v_low-q_v)`。
+- `RRxIONode`：`zeta_RV` 改为以参考退化点居中的 `tanh` 形式：
+  `theta0 + theta1(d_r-d_r_ref) + theta2(d_v-d_v_ref) + theta3(d_r-d_r_ref)(d_v-d_v_ref)`。
+- `RRxIONode`：`alpha_NIS` 未提交/跳过分支回归中性 `1.0`，并修正 `alpha_nis_sat` 对下边界饱和的统计口径；当前 visual-only 默认采用 `alpha_min=1.0`，避免盲目缩小协方差。
+- 统一配置与 manifest：新增并固化 `zeta_dr_ref/zeta_dv_ref`，当前阻塞最优基线采用 `alpha_min=1.0,zeta_min=1.0,gate_soft_scale_max=1.4`。
+
+九数据集 visual-only 结果：
+| 回合 | 结果目录 | strict | 关键结论 |
+|---|---|---|---|
+| V0 baseline | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_visual_v0_baseline` | FAIL | 旧 `R2_zeta_c3` 只覆盖 4 组；visual-only Gate 要求 9 组，因此不能作为最终证据 |
+| V1 softfix | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_visual_v1_softfix` | FAIL | `NIS` 相对下降 `36.88%`，但 `RPE degrade=6.96%`、`RPE95 improve=-18.83%` |
+| V2 centered zeta | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_visual_v2_centered_zeta` | FAIL | `zeta` 居中后仍 `RPE degrade=6.56%`、`RPE95 improve=-18.89%`，且 `NIS` 相对下降不足 `15%` |
+| V3 VC1 | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_visual_v3_vc1` | FAIL | 保守参数仍出现 `ATE degrade=15.69%` 与 `RPE95 improve=-19.79%` |
+| V4 selective inflation | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_visual_v4_selective_inflation` | FAIL | 当前最优阻塞基线：`ATE degrade=-10.08%`、`NIS` 相对下降 `24.11%`、`runtime=-1.98%`、`committed_drop=-0.46%`，但 `RPE degrade=5.53%`、`RPE95 improve=-5.82%` |
+| V5 hard reject probe | `/home/yyy/datasets/irs_rtvi_datasets_2021/results/dvc_rrxio_publish/dvc_w10_visual_v5_hardreject_probe` | 非最终 Gate | `q_r` 硬拒绝对 `mocap_medium` 有局部收益，但使 `mocap_easy` 提交数下降 `25.93%` 且 `ATE degrade=47.85%`，不作为全局修复 |
+
+当前结论：
+- `health_gate`: PASS（`radar_starved=0`、拒绝/硬拒绝/提交计数可追踪、repeatability 通过）。
+- `strict_gate`: FAIL，失败项集中为 `RPE degrade > 5%` 与 `rpe_p95_improve_visual < 10%`。
+- W10 visual-only 状态：`BLOCKED`，不得标记 `DONE`；当前可继承基线为 V4。
+- 下一最小修正方向：逐帧关联 `zeta_rv / quality_soft_scale / alpha_nis_new` 与 RPE95 spike，定位少数长尾段，而不是继续全局硬拒绝或扩大参数网格。
 
 ## 5. 目录与命名规范（统一结果资产）
 建议根目录：`<dataset_root>/results/dvc_rrxio_publish/`
